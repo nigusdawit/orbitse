@@ -2129,9 +2129,17 @@
     CHAT HISTORY
     ========================================================================
     */
+    /* task 095 §2.4 — Conversations inbox. The chat-history tab is now a 3-pane
+       operational inbox (thread list | transcript | context). loadChatHistory()
+       fills the stat tiles + the LEFT thread list; openConversation() fills the
+       transcript + the RIGHT context panel. All rendering is additive over the
+       same /admin/api/chat-history payload (now carrying ai_paused/last_role/
+       last_message_at — see reporting.admin_chat_history). */
+    let _inboxActiveConv = null;     // currently-open conversation id (re-highlight on refresh)
+
     async function loadChatHistory() {
       try {
-        const res = await fetch('/admin/api/chat-history');
+        const res = await fetch('/admin/api/chat-history', { credentials: 'same-origin' });
         const data = await res.json();
 
         const stats = data.stats || {};
@@ -2140,92 +2148,158 @@
         document.getElementById('stat-avg-messages').textContent = stats.avg_messages || 0;
         document.getElementById('stat-unique-visitors').textContent = stats.unique_visitors || 0;
 
-        const tbody = document.getElementById('chat-history-tbody');
+        const list = document.getElementById('inbox-thread-list');
+        if (!list) return;
         const convs = data.conversations || [];
 
         if (!convs.length) {
-          tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No conversations yet. Chat messages will appear here once visitors use the chatbot.</td></tr>';
+          list.innerHTML = '<div class="empty-state" style="padding:1rem;">No conversations yet. They appear here once visitors use the chatbot.</div>';
           return;
         }
 
-        tbody.innerHTML = convs.map(c => {
-          /* Show a short visitor label — the full visitor_id is a persistent
-             identifier stored in the visitor's localStorage, so the same visitor
-             across multiple page loads (conversations) will show the same tag.
-             We truncate it to 10 chars for display; hover shows the full ID. */
+        // Date.now() once per render to flag "live" threads (the last turn was the
+        // visitor's, recently) so an operator can see who is waiting on a reply.
+        const now = Date.now();
+        list.innerHTML = convs.map(c => {
           const vid = c.visitor_id || '';
-          const visitorLabel = vid ? vid.replace('cv_', '').substring(0, 10) : '—';
-          return `
-          <tr>
-            <td>${new Date(c.started_at).toLocaleString()}</td>
-            <td>${c.message_count || 0}</td>
-            <td title="${esc(vid)}"><span class="badge" style="font-size:0.65rem;">${esc(visitorLabel)}</span></td>
-            <td><span class="badge">${c.device_type || 'desktop'}</span></td>
-            <td class="cell-truncate">${esc((c.first_message || '').substring(0, 60))}${(c.first_message || '').length > 60 ? '...' : ''}</td>
-            <td>
-              <button class="btn btn-secondary btn-sm" onclick="viewConversation(${c.id})" data-testid="button-view-conv-${c.id}">View</button>
-            </td>
-          </tr>
-        `}).join('');
+          // Persistent visitor_id (localStorage on the visitor) → short label; hover = full id.
+          const label = vid ? esc(vid.replace('cv_', '').substring(0, 14)) : '—';
+          const when = c.last_message_at || c.started_at;
+          const t = when ? new Date(when).toLocaleString() : '';
+          const recent = when ? (now - new Date(when).getTime()) < 10 * 60 * 1000 : false;
+          const liveDot = (c.last_role === 'user' && recent)
+            ? '<span class="gxi-dot" title="Last message from visitor — awaiting reply"></span>' : '';
+          const pausedChip = c.ai_paused ? '<span class="gxi-chip" title="AI auto-reply is paused">AI paused</span>' : '';
+          return `<button type="button" class="gxi-thread" data-conv="${c.id}" onclick="openConversation(${c.id})" data-testid="thread-${c.id}">
+            <div class="gxi-th-top">${liveDot}<span class="gxi-th-vid" title="${esc(vid)}">${label}</span>${pausedChip}<span class="gxi-th-time">${esc(t)}</span></div>
+            <div class="gxi-th-msg">${esc((c.first_message || '').substring(0, 70))}</div>
+          </button>`;
+        }).join('');
+
+        // Preserve the active highlight across a refresh so live polling (P4) won't
+        // visually drop the open conversation.
+        if (_inboxActiveConv != null) {
+          const el = list.querySelector('.gxi-thread[data-conv="' + _inboxActiveConv + '"]');
+          if (el) el.classList.add('active');
+        }
       } catch (err) {
-        showToast('Failed to load chat history', 'error');
+        const list = document.getElementById('inbox-thread-list');
+        if (list) list.innerHTML = '<div class="empty-state" style="padding:1rem;">Failed to load conversations.</div>';
       }
     }
 
-    async function viewConversation(convId) {
+    // Render the lookup_* tool calls the AI made on an assistant turn (JSONB array
+    // of { name, args, rows|error, ms }) so an operator can spot wrong/missing
+    // lookups. Hoisted out of the old viewConversation so openConversation reuses it.
+    function _renderInboxToolCalls(tcRaw) {
+      if (!tcRaw) return '';
+      let calls = tcRaw;
+      if (typeof calls === 'string') {
+        try { calls = JSON.parse(calls); } catch (_) { return ''; }
+      }
+      if (!Array.isArray(calls) || !calls.length) return '';
+      const items = calls.map(c => {
+        const argStr = c.args && Object.keys(c.args).length
+          ? Object.entries(c.args).map(([k, v]) => `${esc(k)}=${esc(String(v))}`).join(', ')
+          : '(no args)';
+        const stat = c.error
+          ? `<span style="color:#ef4444;">error: ${esc(c.error)}</span>`
+          : `<span style="color:#22c55e;">${c.rows ?? 0} row${c.rows === 1 ? '' : 's'}</span>`;
+        const ms = (c.ms != null) ? ` · ${c.ms}ms` : '';
+        return `<div style="font-family:ui-monospace,monospace; font-size:0.72rem; line-height:1.4;">
+          <span style="color:#a78bfa;">${esc(c.name || 'unknown')}</span>(<span style="color:#94a3b8;">${argStr}</span>) → ${stat}${ms}
+        </div>`;
+      }).join('');
+      return `<div class="chat-msg-tools" style="margin-top:0.5rem; padding:0.5rem 0.65rem; background:rgba(168,85,247,0.08); border-left:3px solid rgba(168,85,247,0.5); border-radius:4px;">
+        <div style="font-size:0.7rem; text-transform:uppercase; letter-spacing:0.06em; color:#a78bfa; margin-bottom:0.3rem;">AI looked up</div>
+        ${items}
+      </div>`;
+    }
+
+    // Open a conversation into the centre transcript pane + load its context panel.
+    // (Renamed from viewConversation; the old name is kept as an alias below.)
+    async function openConversation(convId) {
+      _inboxActiveConv = convId;
+      // Move the active highlight to the clicked thread.
+      document.querySelectorAll('#inbox-thread-list .gxi-thread').forEach(b =>
+        b.classList.toggle('active', b.getAttribute('data-conv') === String(convId)));
+
+      const tEl = document.getElementById('inbox-transcript');
+      const headEl = document.getElementById('inbox-transcript-head');
+      if (tEl) tEl.innerHTML = '<div class="empty-state gxi-placeholder">Loading…</div>';
+
       try {
-        const res = await fetch(`/admin/api/chat-history/${convId}`);
+        const res = await fetch(`/admin/api/chat-history/${convId}`, { credentials: 'same-origin' });
         const data = await res.json();
-        const panel = document.getElementById('chat-detail-panel');
-        const container = document.getElementById('chat-detail-messages');
         const conv = data.conversation || {};
-
-        document.getElementById('chat-detail-title').textContent =
-          `Conversation — ${new Date(conv.started_at).toLocaleString()} (${conv.device_type || 'desktop'})`;
-
+        if (headEl) {
+          headEl.textContent = (conv.started_at ? new Date(conv.started_at).toLocaleString() : 'Conversation')
+            + ' · ' + (conv.device_type || 'desktop');
+        }
         const msgs = data.messages || [];
-        // Helper: render a compact list of which lookup_* tools the AI
-        // called for an assistant turn. tool_calls_json is a JSONB array
-        // of { name, args, rows, ms } (or { name, args, error, ms }) so
-        // the admin can spot wrong/missing lookups at a glance.
-        const renderToolCalls = (tcRaw) => {
-          if (!tcRaw) return '';
-          let calls = tcRaw;
-          if (typeof calls === 'string') {
-            try { calls = JSON.parse(calls); } catch (_) { return ''; }
-          }
-          if (!Array.isArray(calls) || !calls.length) return '';
-          const items = calls.map(c => {
-            const argStr = c.args && Object.keys(c.args).length
-              ? Object.entries(c.args)
-                  .map(([k, v]) => `${esc(k)}=${esc(String(v))}`)
-                  .join(', ')
-              : '(no args)';
-            const stat = c.error
-              ? `<span style="color:#ef4444;">error: ${esc(c.error)}</span>`
-              : `<span style="color:#22c55e;">${c.rows ?? 0} row${c.rows === 1 ? '' : 's'}</span>`;
-            const ms = (c.ms != null) ? ` · ${c.ms}ms` : '';
-            return `<div style="font-family:ui-monospace,monospace; font-size:0.72rem; line-height:1.4;">
-              <span style="color:#a78bfa;">${esc(c.name || 'unknown')}</span>(<span style="color:#94a3b8;">${argStr}</span>) → ${stat}${ms}
+        if (tEl) {
+          tEl.innerHTML = msgs.map(m => {
+            // agent_human = a human takeover reply (P2). Style it distinctly so the
+            // operator can tell apart AI vs human turns in the transcript.
+            const roleClass = m.role === 'agent_human' ? 'gxi-msg-human'
+              : (m.role === 'user' ? 'gxi-msg-user' : 'gxi-msg-assistant');
+            const roleLabel = m.role === 'agent_human' ? 'Human' : m.role;
+            return `<div class="gxi-msg ${roleClass}">
+              <div class="gxi-msg-role">${esc(roleLabel)}</div>
+              <div class="gxi-msg-body">${esc(m.content)}</div>
+              ${m.role === 'assistant' ? _renderInboxToolCalls(m.tool_calls_json) : ''}
             </div>`;
-          }).join('');
-          return `<div class="chat-msg-tools" style="margin-top:0.5rem; padding:0.5rem 0.65rem; background:rgba(168,85,247,0.08); border-left:3px solid rgba(168,85,247,0.5); border-radius:4px;">
-            <div style="font-size:0.7rem; text-transform:uppercase; letter-spacing:0.06em; color:#a78bfa; margin-bottom:0.3rem;">AI looked up</div>
-            ${items}
-          </div>`;
-        };
-        container.innerHTML = msgs.map(m => `
-          <div class="chat-msg chat-msg-${m.role}">
-            <div class="chat-msg-role">${m.role}</div>
-            <div>${esc(m.content)}</div>
-            ${m.role === 'assistant' ? renderToolCalls(m.tool_calls_json) : ''}
-          </div>
-        `).join('');
-
-        panel.style.display = 'block';
-        panel.scrollIntoView({ behavior: 'smooth' });
+          }).join('') || '<div class="empty-state gxi-placeholder">No messages.</div>';
+          tEl.scrollTop = tEl.scrollHeight;
+        }
       } catch (err) {
-        showToast('Failed to load conversation', 'error');
+        if (tEl) tEl.innerHTML = '<div class="empty-state">Could not load transcript.</div>';
+      }
+
+      // Right pane — visitor context (super-admin gated server-side; 403 → hide).
+      loadConversationContext(convId);
+    }
+
+    // Back-compat alias: anything still calling viewConversation(id) keeps working.
+    const viewConversation = openConversation;
+
+    // Fetch + render the RIGHT context panel for a conversation (lead score, detected
+    // intent, traffic source, linked CRM contact). Super-admin only on the server —
+    // a 403 simply shows a muted note rather than erroring. Fail-open throughout.
+    async function loadConversationContext(convId) {
+      const el = document.getElementById('inbox-context');
+      if (!el) return;
+      el.innerHTML = '<div class="gxi-ctx-muted" style="padding:.5rem;">Loading context…</div>';
+      try {
+        const res = await fetch(`/admin/api/conversations/${convId}/context`, { credentials: 'same-origin' });
+        if (res.status === 403) {
+          el.innerHTML = '<div class="gxi-ctx-muted" style="padding:.5rem;">Visitor context is super-admin only.</div>';
+          return;
+        }
+        const d = await res.json();
+        const p = d.profile;
+        let html = '';
+        html += '<div class="gxi-ctx-card"><div class="gxi-ctx-h">Lead score</div>'
+          + '<div class="gxi-score">' + (p && p.lead_score != null ? esc(String(p.lead_score)) : '—') + '</div></div>';
+        const tags = p ? [].concat(p.interests || [], p.needs || []).filter(Boolean) : [];
+        if (tags.length) {
+          html += '<div class="gxi-ctx-card"><div class="gxi-ctx-h">Detected intent</div><div class="gxi-tags">'
+            + tags.slice(0, 8).map(x => '<span class="gxi-tag">' + esc(String(x)) + '</span>').join('') + '</div></div>';
+        }
+        html += '<div class="gxi-ctx-card"><div class="gxi-ctx-h">Source</div>'
+          + '<div class="gxi-ctx-row">' + esc(d.source || 'Unknown') + '</div></div>';
+        if (d.lead) {
+          const sub = [d.lead.email, d.lead.phone, d.lead.status].filter(Boolean).join(' · ');
+          html += '<div class="gxi-ctx-card"><div class="gxi-ctx-h">Linked contact</div>'
+            + '<div class="gxi-ctx-row">' + esc(d.lead.name || d.lead.email || ('Lead #' + d.lead.id)) + '</div>'
+            + (sub ? '<div class="gxi-ctx-muted">' + esc(sub) + '</div>' : '') + '</div>';
+        } else if (p && p.summary) {
+          html += '<div class="gxi-ctx-card"><div class="gxi-ctx-h">Summary</div>'
+            + '<div class="gxi-ctx-muted">' + esc(p.summary) + '</div></div>';
+        }
+        el.innerHTML = html;
+      } catch (e) {
+        el.innerHTML = '<div class="gxi-ctx-muted" style="padding:.5rem;">Context unavailable.</div>';
       }
     }
 
