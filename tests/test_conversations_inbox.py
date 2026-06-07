@@ -149,3 +149,34 @@ def test_paused_conversation_gate_skips_ai():
         assert a["n"] == 0
     finally:
         app.execute_db("DELETE FROM chat_conversations WHERE id=%s", (cid,))
+
+
+# ===================== P3: live visitor delivery (poll) =====================
+
+def test_agent_messages_poll_endpoint():
+    """Public, session-scoped poll: returns only role='agent_human' rows with
+    id > after; unknown/missing session_id fails open to an empty list."""
+    sess = "ci-sess-poll"
+    conv = app.execute_db("INSERT INTO chat_conversations (session_id, visitor_id) VALUES (%s,%s) RETURNING id",
+                          (sess, "ci-vid-poll"))
+    cid = conv["id"]
+    app.execute_db("INSERT INTO chat_messages (conversation_id, role, content) VALUES (%s,'user','hi')", (cid,))
+    app.execute_db("INSERT INTO chat_messages (conversation_id, role, content) VALUES (%s,'assistant','ai reply')", (cid,))
+    hrow = app.execute_db("INSERT INTO chat_messages (conversation_id, role, content) "
+                          "VALUES (%s,'agent_human','hello from a human') RETURNING id", (cid,))
+    hid = hrow["id"]
+    c = app.app.test_client()
+    try:
+        j = c.get("/api/chat/agent-messages?session_id=%s" % sess).get_json()
+        msgs = j.get("messages")
+        assert isinstance(msgs, list)
+        contents = [m["content"] for m in msgs]
+        assert "hello from a human" in contents          # the agent_human row is returned...
+        assert "hi" not in contents and "ai reply" not in contents  # ...user/assistant excluded
+        # after=hid returns nothing new (incremental polling)
+        assert c.get("/api/chat/agent-messages?session_id=%s&after=%d" % (sess, hid)).get_json()["messages"] == []
+        # unknown / missing session_id -> empty list, never a 5xx (fail-open)
+        assert c.get("/api/chat/agent-messages?session_id=nope-nope").get_json()["messages"] == []
+        assert c.get("/api/chat/agent-messages").get_json()["messages"] == []
+    finally:
+        app.execute_db("DELETE FROM chat_conversations WHERE id=%s", (cid,))

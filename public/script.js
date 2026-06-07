@@ -6308,6 +6308,7 @@ async function chatSendStreaming(message, wasCollapsed) {
     let inCommandBlock = false;
     let streamBubble = null;
     let bubbleFinalized = false;
+    let wasPaused = false;   /* 095 §2.4 P3: set when the server emits a 'paused' marker (human takeover) */
     let expandedForResponse = false;
     /* Live page-render state — set when we detect a generatePage/generateHTML
        command early in the stream so the iframe renders HTML progressively
@@ -6468,6 +6469,12 @@ async function chatSendStreaming(message, wasCollapsed) {
                final reply bubble is finalized so the chips appear right
                under the AI's "we have 9am, 10am, 2pm…" sentence. */
             if (event.data) availabilityResults.push(event.data);
+          } else if (event.type === 'paused') {
+            /* 095 §2.4 P3: human takeover — the AI is paused for this
+               conversation, so no reply tokens will arrive. Flag it; the
+               post-loop handler skips the empty-reply fallback and lets the
+               agent-messages poller deliver the human operator's reply. */
+            wasPaused = true;
           } else if (event.type === 'error') {
             showBarThinking(false);
             chatShowTyping(false);
@@ -6497,6 +6504,19 @@ async function chatSendStreaming(message, wasCollapsed) {
     chatShowTyping(false);
     /* Stream finished — drop any lingering live-research status line. */
     chatSetStatus(null);
+
+    /* 095 §2.4 P3: conversation is under human takeover — the server sent a
+       'paused' marker instead of an AI reply. Skip the empty-reply fallback;
+       the operator's reply arrives via the agent-messages poller (already started
+       by chatAddMessage('user',…)). Tear down any partial bubble + TTS. */
+    if (wasPaused) {
+      if (streamBubble) { streamBubble.remove(); streamBubble = null; }
+      if (window.VoiceAgent && typeof window.VoiceAgent.streamSpeakCancel === 'function') {
+        window.VoiceAgent.streamSpeakCancel();
+      }
+      startAgentReplyPolling();   // idempotent — ensure we're watching for the reply
+      return;
+    }
 
     let displayText = finalReply || displayTokens.replace(/`{1,3}\s*$/, '').trim();
     if (!displayText && tokenText.trim()) {
@@ -6909,6 +6929,57 @@ function chatAddMessage(role, text) {
       ensureChatExpanded();
     }
   }
+
+  /* 095 §2.4 P3: once the visitor has sent a message, a conversation exists, so
+     begin watching for human-takeover replies (idempotent — safe to call on
+     every send). Covers all send surfaces because every visitor message routes
+     through chatAddMessage('user', …). */
+  if (role === 'user') startAgentReplyPolling();
+}
+
+/* ---- 095 §2.4 P3: human-takeover reply poller --------------------------
+   Visitor chat is request/response SSE with NO server push, so when an operator
+   takes a conversation over (admin "Send as human"), the reply lands as a
+   role='agent_human' row. We poll /api/chat/agent-messages (session-scoped,
+   read-only, public) while the page is open and render new replies as agent
+   bubbles via the existing chatAddMessage path (which DOMPurify-sanitizes).
+   Fail-open: any error is swallowed so a hiccup can never break the widget. */
+window._chatLastAgentMsgId = window._chatLastAgentMsgId || 0;
+let _agentReplyPollTimer = null;
+
+async function _pollAgentReplyOnce() {
+  try {
+    if (document.hidden) return;                 // be polite when the tab is hidden
+    const sid = window._chatSessionId || '';
+    if (!sid) return;
+    const res = await fetch('/api/chat/agent-messages?session_id=' +
+      encodeURIComponent(sid) + '&after=' + (window._chatLastAgentMsgId || 0));
+    if (!res.ok) return;
+    const data = await res.json();
+    const msgs = (data && data.messages) || [];
+    for (const m of msgs) {
+      chatAddMessage('agent', m.content || '');   // sanitized via renderMarkdown→DOMPurify
+      // Keep the conversation model in sync so a later AI turn (after release)
+      // has the human reply as context, and a panel rebuild shows it.
+      try {
+        if (typeof chatHistory !== 'undefined' && Array.isArray(chatHistory)) {
+          chatHistory.push({ role: 'assistant', content: m.content || '' });
+          if (typeof persistChatHistory === 'function') persistChatHistory();
+        }
+      } catch (_) {}
+      if (m.id > (window._chatLastAgentMsgId || 0)) window._chatLastAgentMsgId = m.id;
+    }
+  } catch (_) { /* fail-open */ }
+}
+
+function startAgentReplyPolling() {
+  if (_agentReplyPollTimer) return;               // idempotent
+  _agentReplyPollTimer = setInterval(_pollAgentReplyOnce, 5000);
+  _pollAgentReplyOnce();                           // immediate first check
+}
+
+function stopAgentReplyPolling() {
+  if (_agentReplyPollTimer) { clearInterval(_agentReplyPollTimer); _agentReplyPollTimer = null; }
 }
 
 

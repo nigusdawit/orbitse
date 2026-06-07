@@ -244,6 +244,7 @@ GET /admin/sso
 GET /api/blog
 GET /api/blog/<string:slug>
 GET /api/business-info
+GET /api/chat/agent-messages
 GET /api/chatbot-settings
 GET /api/custom-section/<int:section_id>/items
 GET /api/events
@@ -359,6 +360,9 @@ POST /admin/api/content/generate
 POST /admin/api/content/visual/embed
 POST /admin/api/content/visual/generate
 POST /admin/api/content/visual/stitch
+POST /admin/api/conversations/<int:conv_id>/message
+POST /admin/api/conversations/<int:conv_id>/release
+POST /admin/api/conversations/<int:conv_id>/takeover
 POST /admin/api/custom-knowledge
 POST /admin/api/custom-sections/<int:section_id>/items
 POST /admin/api/custom-sql

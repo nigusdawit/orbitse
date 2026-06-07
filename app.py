@@ -22637,6 +22637,56 @@ def _persist_visitor_user_message(session_id, visitor_id, message):
         return None
 
 
+@app.route("/api/chat/agent-messages", methods=["GET"])
+def api_chat_agent_messages():
+    """Public, session-scoped poll for human-operator (agent_human) replies.
+
+    Task 095 §2.4 P3. The visitor widget polls this while its chat panel is open
+    so a human-takeover reply (inserted by an operator via /admin/api/conversations
+    /<id>/message) appears in the visitor's chat WITHOUT a reload — visitor chat is
+    otherwise request/response SSE with no server push channel.
+
+    Read-only and unauthenticated, keyed on the caller's OWN session_id exactly
+    like POST /api/chat (the session_id is the per-page-load bearer the visitor
+    already holds; it scopes the read to that one conversation). Returns only
+    role='agent_human' rows with id > `after`, so the client polls incrementally.
+    Fail-open: ANY error returns an empty list so a hiccup here can never break
+    the widget."""
+    session_id = (request.args.get("session_id") or "").strip()
+    if not session_id:
+        return jsonify({"messages": []})
+    try:
+        after = int(request.args.get("after") or 0)
+    except (TypeError, ValueError):
+        after = 0
+    try:
+        conv = query_db(
+            "SELECT id FROM chat_conversations WHERE session_id = %s ORDER BY id DESC LIMIT 1",
+            (session_id,), fetchone=True,
+        )
+        if not conv:
+            return jsonify({"messages": []})
+        rows = query_db(
+            "SELECT id, content, created_at FROM chat_messages "
+            "WHERE conversation_id = %s AND role = 'agent_human' AND id > %s "
+            "ORDER BY id ASC LIMIT 50",
+            (conv["id"], after),
+        )
+        msgs = [{
+            "id": r["id"],
+            "content": r.get("content") or "",
+            "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+        } for r in (rows or [])]
+        return jsonify({"messages": msgs})
+    except Exception as _e:
+        # Fail-open (return empty), but still record for observability.
+        try:
+            capture_exc(_e, "api_chat_agent_messages")
+        except Exception:
+            pass
+        return jsonify({"messages": []})
+
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     """
