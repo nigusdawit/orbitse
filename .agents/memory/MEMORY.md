@@ -15,3 +15,4 @@
 - [Visitor chat tool-round invariant](visitor-chat-tool-rounds.md) — the visitor /api/chat loop's last round MUST be tool-less or many-tool turns return empty & strand the UI on "thinking"; round budget is admin-controlled (normal/complex knobs).
 - [Public JS served as a cached bundle](public-js-bundle-cache.md) — public/script.js + voice.js are concatenated into a content-hashed bundle built once per worker; editing script.js requires a workflow RESTART (gunicorn --reload only watches .py) or the browser keeps the old code.
 - [Feature function vs visibility](feature-visibility-vs-function.md) — tenant_features has TWO gates: enabled (backend, tenant_has_feature) vs visible (admin UI, feature_visible); visible NULL=inherit enabled.
+- [Admin tab action authz](admin-tab-action-authz.md) — an action endpoint's role gate + _FEATURE_ROUTE_PREFIXES entry must match who can see the tab; a client-visible tab with super-admin-only actions gives dead buttons/403s.
