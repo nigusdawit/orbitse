@@ -1,0 +1,46 @@
+Saved Pages tab (Website)
+
+§4.1 Views · 7d — each page row now shows a 7-day public view count. Test: visit a /p/<slug> page a few times, then open Saved Pages — that page's count rises.
+§4.2 Master-detail editor — list on the left, inline editor on the right (no more prompt() popups). Test: click a page row → it populates the right panel (title/slug/meta/enabled/sections + View link); edit + Save; "+ New Page" opens a blank editor.
+Integrations tab (new tab)
+
+§6.1 Integrations hub — one grid showing each integration as connected/missing (from env + MCP signals). Test: open the tab; configured services show "connected", unconfigured show "missing".
+Knowledge tab
+
+§3.7 KPI tiles — Documents + Chunks indexed counts. Test: upload/inspect KB docs; tiles reflect counts.
+Voice tab
+
+§3.6 Voice KPIs — Calls·7d / Total / Missed strip. Test: open the Voice area; strip shows call stats.
+Messaging → Campaigns tab
+
+§5.1/5.2 Campaign analytics — open/click/send metrics per campaign. Test: open the Campaigns analytics panel.
+Subscribers tab
+
+§2.5 Lists + opt-in KPIs — subscriber lists view with opt-in stats. Test: open Subscribers → Lists.
+Forms tab
+
+§2.6 Submissions inbox + convert-to-lead — a submissions inbox with a one-click "convert to lead". Test: submit a public form → it appears in the inbox → click Convert → a lead is created.
+Developer tab
+
+§6.4 Dev-health KPIs — error rate, DB size, uptime, p95 latency strip.
+§6.5 CSV export — pick a whitelisted table → download CSV. Test: use the export picker, confirm a CSV downloads.
+CRM (Contacts/Leads)
+
+§2.7 Configurable thresholds — hot/warm lead-score cutoffs are now settings-driven (AI Control). Test: change crm_hot_min/crm_warm_min, reload Contacts — segment chips reclassify.
+Content Studio tab
+
+§5.3 Kanban board — List/Board toggle; drag cards across status columns. Test: switch to Board view, drag a card.
+Concierge / Chatbot Settings tab
+
+§3.2 Greeting auto-open — "Auto-open after (seconds)" field. Test: set it to e.g. 5, save, open the public site → the chat panel opens itself after 5s (0 = off).
+Testimonials tab
+
+§0.5 Bulk-select pilot — select-all + per-row checkboxes + a "Delete" bulk bar. Test: tick 2+ rows → bar shows "N selected" → Delete removes them. (Verified live: 4 → select 2 → 2 remain.)
+Overview tab
+
+Chart fix — the visitor-trend chart (and every other admin chart) was crashing with a chart.js stack-overflow; now renders. Test: open Overview — the trend chart draws; toggle light/dark — it recolors.
+⚙️ Behavioral / background (toggle + observe, not a button)
+§3.5 Handoff escalation — AI Control knob escalation_enabled (off by default). Test: turn it on → in a visitor chat, when the AI is stuck/asked for a person, it proactively offers a human handoff.
+§5.4 Meeting review trigger — a completed meeting older than auto_send_days auto-queues a review request. Test: mark a meeting completed with an auto-send review destination configured; a review request gets queued.
+✅ Earlier batch (already pushed before this session, also live)
+§0 shell (093), §1 Home/Overview widgets (094), §2.4 Conversations inbox + human takeover (095), §3.3/3.4 AI guardrails — daily spend cap + safety filter (096), §2.1–2.3/2.8 CRM People/Contacts cluster (097), Sentry (092).
