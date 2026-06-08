@@ -23657,7 +23657,40 @@ def api_chat():
 
     def generate():
         _chat_ctx_token = None   # task 048: reset handle for the turn-context var
+        _early_nav_slug = None   # set when we open a clearly-named card up front
         try:
+            # ---- Instant card navigation (snappy "take me there") ----------
+            # When the visitor clearly NAMES one existing gallery card, opening
+            # that card doesn't need to wait for the whole AI answer to finish
+            # streaming (~2s). We match the message against the LIVE gallery_cards
+            # right here (DB-driven, nothing hard-coded) and, on a confident /
+            # unambiguous hit, emit the navigate command UP FRONT so the card
+            # opens in ~200ms while the text reply streams in after it. The
+            # end-of-stream fallback is skipped for this card and any duplicate
+            # model navigate is dropped, so the visitor is never re-jumped.
+            # Skipped while a presentation deck is on screen.
+            if message and not presentation_active:
+                try:
+                    _ecards = query_db(
+                        "SELECT slug, title FROM gallery_cards "
+                        "WHERE slug IS NOT NULL AND slug <> '' "
+                        "ORDER BY sort_order ASC LIMIT 200"
+                    ) or []
+                    _ecard = _match_gallery_card_in_text(message, _ecards)
+                    if _ecard and _ecard.get("slug"):
+                        _early_nav_slug = _ecard["slug"]
+                        yield (
+                            "data: " + json.dumps({
+                                "type": "command",
+                                "command": {"action": "navigate",
+                                            "target": _early_nav_slug},
+                            }) + "\n\n"
+                        )
+                        print(f"[chat] instant-card nav: visitor said "
+                              f"{message[:60]!r} → navigate '{_early_nav_slug}'")
+                except Exception as _e:
+                    print(f"[chat] instant-card nav skipped: {_e}")
+
             # ---- Streaming tool-call loop ---------------------------------
             # Each pass through the loop opens one streaming completion. We
             # accumulate visible text tokens (forwarding them to the visitor
@@ -24262,7 +24295,8 @@ def api_chat():
                 # acts when the model didn't already navigate, and the match must
                 # be confident/unambiguous (see _match_gallery_card_in_text).
                 _specific = None
-                if _cards and not presentation_active and not _nav_already:
+                if (_cards and not presentation_active
+                        and not _nav_already and not _early_nav_slug):
                     _specific = _match_gallery_card_in_text(message or "", _cards)
                     if _specific and ((not cmd) or _scrolls_to_showcase):
                         _was = cmd.get("action") if isinstance(cmd, dict) else None
@@ -24304,6 +24338,12 @@ def api_chat():
                             )
             except Exception as _e:
                 print(f"[chat] gallery fallback skipped: {_e}")
+
+            # We already opened the named card up front (instant nav) — drop a
+            # late/duplicate navigate so the visitor isn't re-jumped after the
+            # answer finishes streaming. Non-navigate commands are kept as-is.
+            if _early_nav_slug and isinstance(cmd, dict) and cmd.get("action") == "navigate":
+                cmd = None
 
             if reply:
                 _va["final"] = reply

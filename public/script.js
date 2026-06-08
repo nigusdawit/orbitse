@@ -6353,6 +6353,7 @@ async function chatSendStreaming(message, wasCollapsed) {
     let displayTokens = '';
     let finalReply = '';
     let pendingCommand = null;
+    let earlyNavDone = false;   /* a navigate command already ran on arrival */
     let inCommandBlock = false;
     let streamBubble = null;
     let bubbleFinalized = false;
@@ -6476,7 +6477,22 @@ async function chatSendStreaming(message, wasCollapsed) {
           } else if (event.type === 'text') {
             finalReply = event.content;
           } else if (event.type === 'command') {
-            pendingCommand = event.command;
+            /* Snappy navigation: a plain `navigate` to an existing card is a
+               cheap, non-destructive action. The server can emit it UP FRONT
+               for a clearly-named card, so run it the moment it arrives — the
+               visitor lands on the card while the text reply keeps streaming,
+               instead of waiting for the whole answer to finish. We run it once
+               (earlyNavDone) and clear pendingCommand so the end-of-stream
+               executor doesn't repeat it; a later duplicate navigate is ignored. */
+            if (event.command && event.command.action === 'navigate') {
+              if (!earlyNavDone) {
+                try { executeCommand(event.command); } catch (e) {}
+                earlyNavDone = true;
+                pendingCommand = null;
+              }
+            } else {
+              pendingCommand = event.command;
+            }
           } else if (event.type === 'status') {
             /* Live "what the AI is doing now" label streamed during the silent
                research rounds (tool lookups) before any reply text arrives.
@@ -6562,6 +6578,13 @@ async function chatSendStreaming(message, wasCollapsed) {
           }
         } catch (e) { /* couldn't parse, skip */ }
       }
+    }
+
+    /* If we already opened the named card up front (instant nav), drop a
+       duplicate navigate the model also emitted inline so the visitor isn't
+       re-jumped to the same card after the answer finishes streaming. */
+    if (earlyNavDone && pendingCommand && pendingCommand.action === 'navigate') {
+      pendingCommand = null;
     }
 
     /* Safety net for an interrupted page build: a page command began streaming
