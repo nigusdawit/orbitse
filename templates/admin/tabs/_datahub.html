@@ -25,7 +25,7 @@
 
     {# ---- Data-access grants (task 085) — SUPER-ADMIN ONLY -------------------
        The whole Datahub tab is already gated `is_super_admin() and
-       has_feature('datahub')` in dashboard.html, so this section is only ever
+       feature_visible('datahub')` in dashboard.html, so this section is only ever
        rendered for the super-admin. It is the surface where they authorize what
        a normal (client) admin's AI assistant may read: by default a client sees
        NOTHING; granting a table here lets the assistant inspect + query it. The

@@ -859,7 +859,8 @@ from core import (  # noqa: E402 - re-export the DB layer that now lives in core
     _FEATURE_REGISTRY, _FEATURE_NAMES, _FEATURE_DEFAULTS,  # registry data (init_db seed, health, catalog, velo)
     _FEATURE_ROUTE_PREFIXES,                  # route-prefix gate map (read by enforce + tests)
     tenant_has_feature, invalidate_tenant_features_cache,  # the gate + cache invalidator (84+ call sites)
-    list_tenant_features, set_tenant_feature, # Plans & Features UI + velo manage_features
+    tenant_feature_visible,                   # SEPARATE UI-visibility knob (admin template gate)
+    list_tenant_features, set_tenant_feature, set_tenant_feature_visible,  # Plans & Features UI + velo manage_features
     _ensure_tenant_feature_row,               # lazy row seeder (kept exported for parity)
     enforce_feature_flags as _core_enforce_feature_flags,  # body of the before_request hook
     # --- admin-settings snapshot helper (Track B) ---
@@ -24594,6 +24595,7 @@ def admin_dashboard():
     return render_template(
         "admin/dashboard.html",
         has_feature=tenant_has_feature,
+        feature_visible=tenant_feature_visible,
         is_super_admin=_is_super_admin,
         appearance=_admin_appearance(),
         # task 092 P1 — browser Sentry boot block ("" when no DSN). |safe in tpl.

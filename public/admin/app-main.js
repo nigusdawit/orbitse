@@ -15659,13 +15659,24 @@
                 ${f.is_addon ? ' · <span style="color:#fbbf24;">add-on</span>' : ''}
               </div>
             </div>
-            <label class="toggle-switch" style="display:inline-flex; align-items:center; gap:0.5rem; cursor:pointer;">
-              <input type="checkbox" ${f.enabled ? 'checked' : ''}
-                     data-feature="${escapeHTML(f.name)}"
-                     onchange="togglePlanFeature(this)"
-                     data-testid="toggle-feature-${escapeHTML(f.name)}">
-              <span style="font-size:0.875rem; color:${f.enabled ? '#10b981' : 'var(--admin-text-muted)'};">${f.enabled ? 'On' : 'Off'}</span>
-            </label>
+            <div style="display:flex; gap:1.25rem; align-items:center;">
+              <label class="toggle-switch" style="display:inline-flex; align-items:center; gap:0.5rem; cursor:pointer;" title="Backend function on/off — when off, the feature's API returns feature_disabled.">
+                <input type="checkbox" ${f.enabled ? 'checked' : ''}
+                       data-feature="${escapeHTML(f.name)}"
+                       data-field="enabled"
+                       onchange="togglePlanFeature(this)"
+                       data-testid="toggle-feature-${escapeHTML(f.name)}">
+                <span style="font-size:0.8125rem; color:${f.enabled ? '#10b981' : 'var(--admin-text-muted)'};">Function</span>
+              </label>
+              <label class="toggle-switch" style="display:inline-flex; align-items:center; gap:0.5rem; cursor:pointer;" title="Show this in the client's menu/tabs. Independent of Function — leave both matched for the classic on/off.">
+                <input type="checkbox" ${f.visible ? 'checked' : ''}
+                       data-feature="${escapeHTML(f.name)}"
+                       data-field="visible"
+                       onchange="togglePlanFeature(this)"
+                       data-testid="toggle-visible-${escapeHTML(f.name)}">
+                <span style="font-size:0.8125rem; color:${f.visible ? '#3b82f6' : 'var(--admin-text-muted)'};">Visible</span>
+              </label>
+            </div>
           </div>
         `).join('')}
       `).join('');
@@ -15673,25 +15684,28 @@
 
     async function togglePlanFeature(input) {
       const name = input.getAttribute('data-feature');
-      const enabled = input.checked;
+      // 'enabled' = backend function gate; 'visible' = UI visibility (separate knob).
+      const field = input.getAttribute('data-field') || 'enabled';
+      const value = input.checked;
       input.disabled = true;
       try {
         const res = await fetch('/admin/api/tenant/features/' + encodeURIComponent(name), {
           method: 'PATCH',
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled }),
+          body: JSON.stringify({ [field]: value }),
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           throw new Error(err.detail || err.error || 'HTTP ' + res.status);
         }
-        showToast('Feature "' + name + '" ' + (enabled ? 'enabled' : 'disabled'));
+        const label = field === 'visible' ? 'visibility' : 'function';
+        showToast('Feature "' + name + '" ' + label + ' ' + (value ? 'on' : 'off'));
         loadPlansFeatures();
       } catch (e) {
         console.error('toggle failed', e);
         window.appReportError(e, 'app-main.js:togglePlanFeature');
-        input.checked = !enabled;
+        input.checked = !value;
         showToast('Failed to toggle: ' + (e.message || e), 'error');
       } finally {
         input.disabled = false;

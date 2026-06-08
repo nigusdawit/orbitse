@@ -18,7 +18,12 @@
       <div style="padding:0.75rem 1.25rem; border-bottom:1px solid var(--admin-border); display:flex; justify-content:space-between; align-items:center;">
         <div>
           <div style="font-weight:600;">Feature toggles</div>
-          <div style="font-size:0.8125rem; color:var(--admin-text-muted);">Turn capabilities on or off for this site. Changes take effect on the next request.</div>
+          <div style="font-size:0.8125rem; color:var(--admin-text-muted);">
+            <strong>Function</strong> turns the capability on/off (the API stops working when off).
+            <strong>Visible</strong> only controls whether the client sees it in their menu.
+            They're independent — e.g. keep Function on but Visible off to quietly run a feature, or
+            Function off + Visible on to show it as a preview. Changes take effect on the next request.
+          </div>
         </div>
       </div>
       <div id="plans-features-list" data-testid="list-plans-features">

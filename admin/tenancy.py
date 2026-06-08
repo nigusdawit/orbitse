@@ -30,6 +30,7 @@ from core import (
     current_tenant_id,
     list_tenant_features,
     set_tenant_feature,
+    set_tenant_feature_visible,
 )
 
 tenancy_bp = Blueprint("tenancy", __name__)
@@ -77,22 +78,37 @@ def admin_list_tenant_features():
 @tenancy_bp.route("/admin/api/tenant/features/<name>", methods=["PATCH"])
 @admin_required
 def admin_toggle_tenant_feature(name):
-    """Flip one feature on/off. Body: {"enabled": bool, "note"?: str}."""
+    """Set one feature's function and/or visibility.
+
+    Body may carry either or both knobs (they are independent):
+      {"enabled": bool, "note"?: str}  → backend function gate (on/off)
+      {"visible": bool}                → UI visibility (sidebar/tab shown to client)
+    The function gate is unchanged from before; visibility is the new separate knob.
+    """
     # HARD boundary: super admin only (see admin_list_tenant_features). Without
     # this in-handler check a client could PATCH its own flags via curl.
     _guard = _require_super_admin_role()
     if _guard is not None:
         return _guard
     body = request.get_json(silent=True) or {}
-    if "enabled" not in body:
-        return jsonify({"error": "missing_field", "field": "enabled"}), 400
+    has_enabled = "enabled" in body
+    has_visible = "visible" in body
+    if not has_enabled and not has_visible:
+        return jsonify({"error": "missing_field", "field": "enabled|visible"}), 400
     try:
-        new_val = set_tenant_feature(
-            name,
-            bool(body.get("enabled")),
-            note=str(body.get("note") or ""),
-        )
-        return jsonify({"feature": name, "enabled": new_val})
+        resp = {"feature": name}
+        if has_enabled:
+            resp["enabled"] = set_tenant_feature(
+                name,
+                bool(body.get("enabled")),
+                note=str(body.get("note") or ""),
+            )
+        if has_visible:
+            resp["visible"] = set_tenant_feature_visible(
+                name,
+                bool(body.get("visible")),
+            )
+        return jsonify(resp)
     except ValueError as ve:
         return jsonify({"error": "unknown_feature", "feature": name, "detail": str(ve)}), 400
     except Exception as e:
