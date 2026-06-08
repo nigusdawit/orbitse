@@ -4670,6 +4670,9 @@ body.theme-accent-gradient .section-divider {
 .chatbot-messages {
   flex: 1;
   overflow-y: auto;
+  /* Keep wheel/touch scrolling inside the chat — don't let it chain through
+     to whatever is behind (e.g. the gallery card view when chat is open). */
+  overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   padding: 1rem;
   display: flex;
@@ -6116,6 +6119,9 @@ body.theme-accent-gradient .section-divider {
   font-weight: 300;
   max-height: 200px;
   overflow-y: auto;
+  /* Keep wheel/touch scrolling inside the chat panel — don't let it chain
+     through to the gallery card view sitting behind it. */
+  overscroll-behavior: contain;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
 }
@@ -6226,6 +6232,7 @@ body.theme-accent-gradient .section-divider {
 .side-panel-history .chatbot-messages {
   flex: 1;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0.5rem 1rem;
 }
 
