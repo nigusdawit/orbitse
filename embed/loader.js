@@ -119,6 +119,12 @@
     // page above the band stays clickable. The in-iframe bridge (widget-bridge.js)
     // reports the precise band height, and the modal "expanded" state.
     var COLLAPSED_H = 120;
+    // Height changes smaller than this are treated as the band "settling" (font
+    // swap, icon render, text reflow, thinking-dots toggle) and are SNAPPED with
+    // no animation so the panel doesn't shake on load. Larger changes (panel
+    // open/close, going fullscreen) animate smoothly. Tuned above typical
+    // settling jitter (a few–tens of px) but below a panel open (>100px).
+    var ANIM_MIN = 48;
 
     var iframe = document.createElement("iframe");
     iframe.id = FRAME_ID;
@@ -257,21 +263,36 @@
       var fh = Math.min(h || COLLAPSED_H, window.innerHeight || 800);
       var prevH = parseInt(iframe.style.height, 10) || 0;
       if (rects !== undefined) lastRects = rects;
-      iframe.style.height = fh + "px";
-      if (Math.abs(fh - prevH) > 2) {
-        // The height is animating (panel opening/closing, popover, etc.). A
-        // clip-path is anchored to the iframe's top-left, which moves while the
-        // bottom-anchored box grows — so a clip computed for the FINAL height
-        // would cut/reveal content edges mid-animation (flicker). Clear it for
-        // the duration, then re-apply the real clip the instant the animation
+      var delta = Math.abs(fh - prevH);
+      if (delta <= 2) {
+        // Same height, only the rect set changed — clip can update instantly.
+        cancelClipReapply();
+        iframe.style.height = fh + "px";
+        applyClip(lastRects, fh);
+      } else if (delta < ANIM_MIN) {
+        // Small height change — almost always the band "settling" as content
+        // reflows on load (web fonts swapping, icons rendering, text wrapping,
+        // the thinking dots toggling). Animating every one of these makes the
+        // panel visibly shake/bounce. SNAP them instead (transition disabled for
+        // one frame); only deliberate, larger changes get the smooth animation.
+        cancelClipReapply();
+        var savedTransition = iframe.style.transition;
+        iframe.style.transition = "none";
+        iframe.style.height = fh + "px";
+        void iframe.offsetHeight;          // force reflow so the snap takes hold
+        iframe.style.transition = savedTransition;
+        applyClip(lastRects, fh);
+      } else {
+        // Large, deliberate change (panel open/close, going fullscreen). Animate
+        // smoothly. A clip-path is anchored to the iframe's top-left, which moves
+        // while the bottom-anchored box grows — so a clip computed for the FINAL
+        // height would cut/reveal content edges mid-animation (flicker). Clear it
+        // for the duration, then re-apply the real clip the instant the animation
         // ends (transitionend) so host click-through is restored ASAP.
+        iframe.style.height = fh + "px";
         iframe.style.clipPath = "none";
         iframe.style.webkitClipPath = "none";
         scheduleClipReapply(fh);
-      } else {
-        // Same height, only the rect set changed — clip can update instantly.
-        cancelClipReapply();
-        applyClip(lastRects, fh);
       }
     }
 

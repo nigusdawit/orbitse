@@ -89,6 +89,18 @@ host clicks — acceptable because it's only during the user's own expand gestur
 and ends as soon as the animation does. Tiny (<2px) height jitters skip the
 animation path and re-clip instantly.
 
+**Only animate DELIBERATE changes — snap the load-time settling (or it shakes):**
+the bridge reports MANY small height changes right after load as content settles
+(web fonts swapping, lucide icons rendering, text reflow, thinking-dots toggle).
+If `transition:height` animates every one, the panel visibly shakes/bounces on
+load. **Fix:** in `setCollapsed()` branch on the height delta — `<=2px` rect-only
+re-clip; `<ANIM_MIN` (~48px) is settling jitter, SNAP it (set `transition:none`,
+set height, force a reflow with `void offsetHeight`, restore the saved transition,
+re-clip instantly); only `>=ANIM_MIN` (panel open/close, fullscreen) gets the
+smooth animate+clip-reapply path. **Why 48:** above typical settling jitter
+(a few–tens of px) but below a real panel open (>100px). Medium popovers may snap
+rather than glide — acceptable; killing the startup shake matters more.
+
 ## Band/clip need TOP headroom for above-bar UI
 Hover tooltips (`.chatbot-icon-btn::after`, "Visualize" etc.) and the AI
 "thinking" three-dots render **above** the bar, outside each surface's own box.
