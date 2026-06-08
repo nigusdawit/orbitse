@@ -76,6 +76,57 @@
             <input type="text" id="chatbot-api-endpoint" placeholder="/api/chat" data-testid="input-chatbot-endpoint">
           </div>
         </div>
+
+        <!-- ============================================================
+             CHAT WIDGET THEME — controls the LOOK of the public chat pill
+             & panel. Stored as a JSONB `theme` object on chatbot_settings;
+             applied live on the public site via CSS variables (see
+             applyChatbotTheme in script.js). Every control is optional and
+             falls back to the built-in look, so leaving defaults changes
+             nothing. Industry-agnostic / reusable.
+             ============================================================ -->
+        <h3 style="margin-top: 1.5rem;">Chat Widget Theme</h3>
+        <p style="color: var(--admin-text-muted); font-size: 0.8125rem; margin-bottom: 1rem;">
+          Style the floating chat pill and panel shown to visitors. Changes apply on the public site as soon as you save.
+        </p>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="chatbot-theme-shape">Pill Shape</label>
+            <select id="chatbot-theme-shape" data-testid="select-chatbot-theme-shape">
+              <option value="pill">Pill (fully rounded)</option>
+              <option value="rounded">Rounded corners</option>
+              <option value="square">Square corners</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="chatbot-theme-glass-mode">Glass Contrast</label>
+            <select id="chatbot-theme-glass-mode" data-testid="select-chatbot-theme-glass-mode">
+              <option value="dark">Dark (light text)</option>
+              <option value="light">Light (dark text)</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row" style="align-items: center;">
+          <div class="form-group" style="display: flex; align-items: center; gap: 0.625rem;">
+            <label class="toggle-switch" data-testid="toggle-chatbot-theme-glass" style="margin: 0;">
+              <input type="checkbox" id="chatbot-theme-glass" checked>
+              <span class="toggle-slider"></span>
+            </label>
+            <label for="chatbot-theme-glass" style="margin: 0;">Glassmorphic blur</label>
+          </div>
+        </div>
+        <div class="form-row" style="align-items: center;">
+          <div class="form-group" style="display: flex; align-items: center; gap: 0.625rem;">
+            <input type="checkbox" id="chatbot-theme-tint-enabled" data-testid="check-chatbot-theme-tint">
+            <label for="chatbot-theme-tint-enabled" style="margin: 0;">Custom tint color</label>
+            <input type="color" id="chatbot-theme-tint" value="#0c1220" data-testid="input-chatbot-theme-tint" style="width: 3rem; height: 2rem; padding: 0; border: none; background: none; cursor: pointer;">
+          </div>
+          <div class="form-group" style="display: flex; align-items: center; gap: 0.625rem;">
+            <input type="checkbox" id="chatbot-theme-text-enabled" data-testid="check-chatbot-theme-text">
+            <label for="chatbot-theme-text-enabled" style="margin: 0;">Custom text color</label>
+            <input type="color" id="chatbot-theme-text" value="#ffffff" data-testid="input-chatbot-theme-text" style="width: 3rem; height: 2rem; padding: 0; border: none; background: none; cursor: pointer;">
+          </div>
+        </div>
       </div>
 
       <!-- Embed Mode Settings -->

@@ -51,10 +51,19 @@ even though the HTML is fully present and the row is saved.
 ALWAYS does an authoritative one-shot `openImmersivePage(cmd.html)` once the full
 command arrives — it writes the COMPLETE document into the iframe via `srcdoc`, so
 the browser parses it fresh and runs every `<script>` in normal load order
-(`DOMContentLoaded` fires correctly) and all content reveals. The live "assembly"
-stream is now purely a progress affordance; never trust it for the final result.
-**Why:** correctness beats the streaming animation — the only cost is the CSS
-intro replays once.
+(`DOMContentLoaded` fires correctly) and all content reveals. **Why:** correctness
+beats any streaming animation — the only cost is the CSS intro replays once.
+
+**Update (live overlay removed entirely):** by product decision the mid-stream
+live "Building…" overlay is GONE on the normal path — `chatSendStreaming` no
+longer calls `openImmersivePageStreaming`/`appendImmersivePageStreaming`; it only
+sets a local `pageBuildDetected` flag (used by the cut-off + empty-reply safety
+nets). The visitor reads a short overview that streams into a normal **chat
+bubble** first, then the finished page renders ONCE via the command handler (and
+is saved to the page archive). So the "tear down on every exit path" invariant
+above is now mostly moot for the normal path (no overlay opens during streaming);
+the `isImmersivePageStreaming()`/`resetImmersiveStreamState()` guards remain only
+as defensive carry-overs. The streaming helpers are still defined but dead.
 
 ## Slowness ("long thinking") is generation time, not research rounds
 

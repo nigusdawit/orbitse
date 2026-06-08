@@ -865,7 +865,8 @@ from core import (  # noqa: E402 - re-export the DB layer that now lives in core
     _FEATURE_REGISTRY, _FEATURE_NAMES, _FEATURE_DEFAULTS,  # registry data (init_db seed, health, catalog, velo)
     _FEATURE_ROUTE_PREFIXES,                  # route-prefix gate map (read by enforce + tests)
     tenant_has_feature, invalidate_tenant_features_cache,  # the gate + cache invalidator (84+ call sites)
-    list_tenant_features, set_tenant_feature, # Plans & Features UI + velo manage_features
+    tenant_feature_visible,                   # SEPARATE UI-visibility knob (admin template gate)
+    list_tenant_features, set_tenant_feature, set_tenant_feature_visible,  # Plans & Features UI + velo manage_features
     _ensure_tenant_feature_row,               # lazy row seeder (kept exported for parity)
     enforce_feature_flags as _core_enforce_feature_flags,  # body of the before_request hook
     # --- admin-settings snapshot helper (Track B) ---
@@ -5691,6 +5692,9 @@ from urllib.parse import urlparse as _embed_urlparse
 _EMBEDDABLE_PREFIXES = (
     "/api/chat", "/api/chatbot-settings", "/api/voice/", "/api/forms/",
     "/api/gallery-cards", "/api/products", "/api/services", "/api/presentations/",
+    # /api/theme is a public, read-only palette/font feed. Allowing it cross-origin
+    # lets the embedded widget brand-match the site (colours + fonts) on any host.
+    "/api/theme",
 )
 
 
@@ -5753,6 +5757,75 @@ def _embed_apply_cors(resp, key):
         resp.headers["Access-Control-Max-Age"] = "600"
 
 
+def _embed_own_origin():
+    """The platform's own scheme://host (the origin the embedded concierge is
+    served from). The iframe's API calls are SAME-ORIGIN, so they carry THIS
+    origin — not the host site's — which is why the per-key origin allowlist
+    (which lists the host sites) must not be applied to same-origin requests.
+    Best-effort; returns "" if it can't be derived."""
+    try:
+        p = _embed_urlparse(request.host_url or "")
+        if p.scheme and p.netloc:
+            return f"{p.scheme}://{p.netloc}"
+    except Exception:
+        pass
+    return ""
+
+
+def _embed_frame_ancestors(row):
+    """Build the CSP `frame-ancestors` value that controls WHO may iframe the
+    embedded concierge — the browser-enforced gate that stops unauthorized
+    third-party embedding (it can't be spoofed by a forged Referer/Origin).
+
+    - No / invalid key (row is None): only our own origin ('self') may frame it.
+      Direct visits are unaffected — frame-ancestors restricts framing, not
+      navigation.
+    - Valid key: 'self' plus the key's allow-listed origins. If the client
+      explicitly opted into any origin ('*' in the allowlist), allow '*'.
+    """
+    if not row:
+        return "'self'"
+    allowlist = row.get("origin_allowlist")
+    al = allowlist if isinstance(allowlist, list) else []
+    if isinstance(allowlist, str):
+        try:
+            al = json.loads(allowlist)
+        except Exception:
+            al = []
+    if "*" in al:
+        return "*"
+    # Keep only well-formed scheme://host origins. A stray value can't widen the
+    # policy, but it would make the whole header invalid (browsers drop it).
+    origins = []
+    for o in al:
+        o = (o or "").strip().rstrip("/")
+        if "://" in o and " " not in o and o not in origins:
+            origins.append(o)
+    return " ".join(["'self'"] + origins)
+
+
+def _embed_unauthorized_response():
+    """403 page served when /embed/concierge is loaded with an embed key that
+    doesn't resolve to an ENABLED key (revoked / disabled / typo). Failing
+    CLOSED here means a disabled client embed visibly stops working instead of
+    silently serving an unauthorized concierge."""
+    html = (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        "<title>Embed not authorized</title></head>"
+        "<body style='margin:0;font-family:system-ui,sans-serif;"
+        "display:flex;align-items:center;justify-content:center;height:100vh;"
+        "background:transparent;color:#444'>"
+        "<div style='text-align:center;max-width:320px;padding:16px'>"
+        "<p style='font-size:14px;line-height:1.5;margin:0'>"
+        "This concierge embed is not authorized. Please contact the site owner."
+        "</p></div></body></html>"
+    )
+    resp = Response(html, status=403, mimetype="text/html")
+    resp.headers["Content-Security-Policy"] = "frame-ancestors 'self'"
+    return resp
+
+
 @app.before_request
 def _embed_auth():
     from flask import g
@@ -5780,7 +5853,14 @@ def _embed_auth():
         row = _embed_resolve_key(key)
         if not row or not row.get("enabled"):
             return jsonify({"error": "invalid embed key"}), 403
-        if origin and not _embed_origin_allowed(origin, row.get("origin_allowlist")):
+        # The embedded concierge (served from /embed/concierge) makes SAME-ORIGIN
+        # API calls, so they carry OUR origin, not the host site's. The host
+        # origin was already gated at iframe-load time via the CSP frame-ancestors
+        # on /embed/concierge, so we only apply the per-key origin allowlist to
+        # genuine CROSS-ORIGIN keyed requests (the direct-fetch widget model).
+        own = _embed_own_origin()
+        if (origin and origin != own
+                and not _embed_origin_allowed(origin, row.get("origin_allowlist"))):
             return jsonify({"error": "origin not allowed for this embed key"}), 403
         g._embed_keyed = True
         g._embed_key = key
@@ -5796,14 +5876,112 @@ def _embed_cors(resp):
     return resp
 
 
+# In-process cache of the widget bundle's content hash, re-derived only when a
+# widget file's mtime changes (so we don't hash three files on every request).
+_WIDGET_VER_CACHE = {"key": None, "ver": None}
+
+
+def _widget_asset_version():
+    """Short content hash of the widget bundle (chat-ui.js/css + voice.js).
+
+    Injected into loader.js as a ?v= cache-buster so an updated widget reaches
+    embedded sites (e.g. the WordPress plugin) immediately, without anyone
+    clearing browser or CDN caches. The hash only changes when the widget files'
+    bytes change, so unchanged deploys keep serving from cache.
+    """
+    import hashlib
+    widget_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "embed", "widget")
+    files = ["chat-ui.js", "chat-ui.css", "voice.js"]
+    try:
+        stat_key = tuple(
+            (f, os.path.getmtime(os.path.join(widget_dir, f)))
+            for f in files if os.path.exists(os.path.join(widget_dir, f))
+        )
+    except Exception:
+        stat_key = None
+    if stat_key and _WIDGET_VER_CACHE["key"] == stat_key and _WIDGET_VER_CACHE["ver"]:
+        return _WIDGET_VER_CACHE["ver"]
+    try:
+        h = hashlib.sha1()
+        for f in files:
+            p = os.path.join(widget_dir, f)
+            try:
+                with open(p, "rb") as fh:
+                    h.update(fh.read())
+            except Exception:
+                continue
+        ver = h.hexdigest()[:12]
+    except Exception:
+        import time as _t
+        ver = str(int(_t.time()))
+    _WIDGET_VER_CACHE["key"] = stat_key
+    _WIDGET_VER_CACHE["ver"] = ver
+    return ver
+
+
 @app.route("/embed/loader.js", methods=["GET"])
 def embed_loader_js():
     """Serve the cross-origin Shadow-DOM widget loader. Script tags need no CORS;
-    served with a JS content type + a short cache."""
+    served with a JS content type + a short cache. We read the file and inject a
+    content-hash version (replacing the __AAP_WIDGET_VER__ placeholder) so the
+    loader can cache-bust the widget assets it pulls — updates show up instantly."""
     embed_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "embed")
-    resp = send_from_directory(embed_dir, "loader.js")
-    resp.headers["Content-Type"] = "text/javascript"
-    resp.headers["Cache-Control"] = "public, max-age=300"
+    try:
+        with open(os.path.join(embed_dir, "loader.js"), "r", encoding="utf-8") as fh:
+            body = fh.read()
+    except Exception:
+        abort(404)
+    body = body.replace("__AAP_WIDGET_VER__", _widget_asset_version())
+    resp = Response(body, mimetype="text/javascript")
+    # Revalidate the loader on every load so a new widget version stamp reaches
+    # visitors right away. The loader is tiny; the big widget files it pulls keep
+    # a long cache and are busted by the injected ?v= when their bytes change.
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+@app.route("/embed/concierge", methods=["GET"])
+def embed_concierge():
+    """Serve the REAL public concierge in transparent 'widget mode' for embedding.
+
+    The embeddable widget (embed/loader.js) loads THIS page inside a cross-origin
+    <iframe> on the client's own website. Because it is the actual homepage shell
+    — same script.js / voice.js bundle, same /api/* + /api/voice/* endpoints, same
+    markup — the embedded concierge looks and behaves EXACTLY like the one on the
+    main site, with full capability (chat, voice, generatePage, canvas) and no
+    separate reimplementation to maintain.
+
+    public/index.html adds the `aap-widget aap-collapsed` classes (an early inline
+    <head> script keyed on this path) so styles.css hides the marketing chrome and
+    makes the page transparent, leaving only the floating concierge. Then
+    public/widget-bridge.js talks to the parent loader (via postMessage) to resize
+    the iframe between the collapsed bar and the expanded panels.
+
+    Served under /embed (already exempt from chat-only mode) with NO website
+    feature gate, so the embedded concierge keeps working even when the operator
+    turns the public website OFF.
+
+    AUTHORIZATION: who may iframe this widget is enforced by the CSP
+    `frame-ancestors` header set below — only the origins allow-listed for the
+    request's embed key (or just our own origin when no/invalid key). A key that
+    is present but doesn't resolve to an ENABLED key fails closed (403). The
+    validated key is injected into the served shell (see embed_key= below) so the
+    concierge's same-origin /api/* calls carry X-Embed-Key for _embed_auth."""
+    key = (request.args.get("embed_key", "") or
+           request.headers.get("X-Embed-Key", "")).strip()
+    row = _embed_resolve_key(key) if key else None
+    # An explicit key that doesn't resolve to an enabled key → refuse, so a
+    # revoked/disabled client embed visibly stops working (fail closed).
+    if key and (not row or not row.get("enabled")):
+        return _embed_unauthorized_response()
+    resp = _render_app_shell_response(embed_key=(key if row else ""))
+    try:
+        resp.headers["Content-Security-Policy"] = (
+            "frame-ancestors " + _embed_frame_ancestors(row))
+    except Exception:
+        # Never serve the embed without a framing gate — fail to the strictest
+        # policy (own origin only) if the allowlist can't be built.
+        resp.headers["Content-Security-Policy"] = "frame-ancestors 'self'"
     return resp
 
 
@@ -6023,6 +6201,17 @@ def _enforce_chat_only_mode():
         if path == prefix or path.startswith(prefix if prefix.endswith(".") else prefix + "/"):
             return None
     if path in _CHAT_ONLY_ALLOWED_EXACT:
+        return None
+    # Static assets (css/js/images/fonts) must keep loading so the embedded
+    # concierge served at /embed/concierge can still pull /styles.css, the agent
+    # avatar image, fonts, etc. while the public marketing pages are hidden.
+    # Marketing pages are extensionless (/, /p/<slug>, /<section>), so allowing
+    # dotted asset paths never re-exposes the site itself — only inert assets.
+    _lp = path.lower()
+    if "." in _lp and _lp.rsplit(".", 1)[-1] in (
+        "css", "js", "mjs", "png", "jpg", "jpeg", "gif", "svg", "webp",
+        "ico", "woff", "woff2", "ttf", "otf", "map", "webmanifest",
+    ):
         return None
     # Everything else is a public-site page → show the placeholder instead.
     return _chat_only_placeholder_response()
@@ -6602,7 +6791,12 @@ _SUPER_ADMIN_PROTECTED_PREFIXES = (
 
 
 def _super_admin_key():
-    return os.environ.get("SUPER_ADMIN_KEY") or ""
+    # .strip() so a stray trailing newline/space accidentally pasted into the
+    # SUPER_ADMIN_KEY secret value can't cause a permanent mismatch. The key the
+    # operator types into the unlock box is also stripped (see super_admin_unlock),
+    # so without this a copy-paste with a trailing newline would always be rejected
+    # even when the visible characters are correct.
+    return (os.environ.get("SUPER_ADMIN_KEY") or "").strip()
 
 
 def _super_admin_lock_enabled():
@@ -8034,7 +8228,7 @@ def serve_standalone_page(slug):
     return _render_app_shell_response(page=page, section_ids=section_ids)
 
 
-def _render_app_shell_response(page=None, section_ids=None, initial_section_dom_id=None, seo_overrides=None):
+def _render_app_shell_response(page=None, section_ids=None, initial_section_dom_id=None, seo_overrides=None, embed_key=None):
     """
     Serve the public site HTML shell with SEO meta tags injected
     server-side. Used by both the homepage at "/" (page=None) and
@@ -8099,7 +8293,7 @@ def _render_app_shell_response(page=None, section_ids=None, initial_section_dom_
         # href="/styles.css"> snapshot — also get the fresh marker. Bump
         # _STYLES_CSS_VERSION whenever public/styles.css ships a visible
         # change that needs to invalidate cached copies.
-        _STYLES_CSS_VERSION = "20260430i"
+        _STYLES_CSS_VERSION = "20260608g"
         html_content = re.sub(
             r'href="/styles\.css(?:\?[^"]*)?"',
             f'href="/styles.css?v={_STYLES_CSS_VERSION}"',
@@ -8504,6 +8698,42 @@ def _render_app_shell_response(page=None, section_ids=None, initial_section_dom_
         # visitor never gets new front-end code. Force revalidation on every
         # load (the bundle itself stays forever-cacheable via its hashed URL),
         # so a single refresh always fetches the latest bundle.
+        # Embed widget mode: when served at /embed/concierge with a VALID key,
+        # inject the key + a tiny fetch wrapper so the concierge's SAME-ORIGIN
+        # /api/* calls carry X-Embed-Key. This ties the embedded session to its
+        # key (validated by _embed_auth) so the embed key control model applies
+        # to the iframe flow. The homepage at "/" passes embed_key=None and so
+        # injects nothing — it stays keyless / first-party (behavior unchanged).
+        # Best-effort: any failure leaves the page working without the header.
+        if embed_key:
+            try:
+                safe_key = json.dumps(str(embed_key))
+                inject = (
+                    "<script>(function(){"
+                    "window.__AAP_EMBED_KEY__=" + safe_key + ";"
+                    "var k=window.__AAP_EMBED_KEY__;"
+                    "if(!k||!window.fetch)return;"
+                    "var _f=window.fetch;"
+                    "window.fetch=function(input,init){try{"
+                    "var u=(typeof input===\"string\")?input:((input&&input.url)||\"\");"
+                    "var api=(u.indexOf(\"/api/\")===0)||"
+                    "(u.indexOf(location.origin+\"/api/\")===0);"
+                    "if(api){init=init||{};"
+                    "var h=new Headers((init&&init.headers)||"
+                    "((typeof input!==\"string\"&&input&&input.headers)||{}));"
+                    "if(!h.has(\"X-Embed-Key\"))h.set(\"X-Embed-Key\",k);"
+                    "init.headers=h;}}catch(e){}"
+                    "return _f.call(this,input,init);};"
+                    "})();</script>"
+                )
+                if "</head>" in html_content:
+                    html_content = html_content.replace(
+                        "</head>", inject + "\n</head>", 1)
+                else:
+                    html_content = inject + html_content
+            except Exception as e:
+                print(f"[serve_index] embed key injection failed: {e}; continuing")
+
         resp = Response(html_content, mimetype="text/html")
         resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return resp
@@ -22739,6 +22969,66 @@ def api_chat_agent_messages():
         return jsonify({"messages": []})
 
 
+# Words that carry no disambiguating weight inside a gallery-card title, so
+# they don't count toward "the visitor named THIS card" matching. Kept generic
+# (industry-agnostic) — these are filler/structural words, not item names.
+_GALLERY_MATCH_STOPWORDS = {
+    "and", "the", "with", "for", "from", "your", "our", "new", "plus",
+    "a", "an", "to", "of", "in", "on", "or", "by", "per", "full", "home",
+    "service", "services", "package", "packages",
+}
+
+
+def _gallery_title_keywords(title):
+    """The significant lowercase words in a gallery-card title (>=3 chars and
+    not a filler stopword). These are what we look for in a visitor's message to
+    decide they named that specific card. Nothing here is item-specific — it is
+    derived live from whatever the card titles happen to be."""
+    words = re.sub(r"[^a-z0-9\s]", " ", (title or "").lower()).split()
+    return [w for w in words if len(w) >= 3 and w not in _GALLERY_MATCH_STOPWORDS]
+
+
+def _match_gallery_card_in_text(text, cards):
+    """Return the ONE gallery card a visitor's message clearly refers to, or
+    None when there is no confident, unambiguous match.
+
+    Purely DB-driven: the message tokens are matched against each LIVE card's
+    title keywords — no card names are ever hard-coded. This lets simply NAMING
+    a card ("seamless gutters?") open it, not only an explicit "show me ...".
+
+    Confidence rules (kept strict to avoid yanking the visitor to the wrong
+    place): a match wins only when the message echoes >=2 distinctive title
+    words of a single card, OR a single distinctive word that uniquely
+    identifies exactly one card. If several cards tie for the top score the
+    message is ambiguous and we return None (let the model/text answer stand).
+    """
+    msg_tokens = set(re.sub(r"[^a-z0-9\s]", " ", (text or "").lower()).split())
+    if not msg_tokens:
+        return None
+    scored = []
+    for c in cards:
+        if not (c.get("slug") or "").strip():
+            continue
+        kws = set(_gallery_title_keywords(c.get("title")))
+        if not kws:
+            continue
+        matched = len(kws & msg_tokens)
+        if matched:
+            scored.append((matched, c))
+    if not scored:
+        return None
+    scored.sort(key=lambda t: t[0], reverse=True)
+    top = scored[0][0]
+    tied = [c for n, c in scored if n == top]
+    if len(tied) > 1:
+        return None                      # ambiguous — don't guess
+    if top >= 2:
+        return tied[0]                   # echoed several distinctive words
+    if top == 1 and len(scored) == 1:
+        return tied[0]                   # one distinctive word, unique card
+    return None
+
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     """
@@ -23461,6 +23751,37 @@ def api_chat():
         "deck can resume."
     )
 
+    # ----- 6b. EXISTING GALLERY CARDS vs. NEW PAGES + PAGE-BUILD OVERVIEW -----
+    # Two tenant-invariant rules that keep the visitor experience snappy:
+    #   1. When the visitor wants to SEE something that already exists as a
+    #      gallery card, OPEN that real card with `navigate` — never rebuild it
+    #      from scratch with the (slow, redundant) generatePage command.
+    #   2. Whenever a page IS generated, lead with a one-line overview so the
+    #      visitor sees what's coming before the slower page render finishes.
+    active_prompt += (
+        "\n\nSHOWING EXISTING GALLERY CARDS:\n"
+        "  - The SITE INDEX lists every gallery card by name and slug. When "
+        "the visitor asks about, mentions, or wants to see a SPECIFIC item "
+        "that already exists as one of those gallery cards — EVEN IF they "
+        "only name it without a 'show me' verb (e.g. just \"seamless "
+        "gutters?\" or \"tell me about the metal roof\") — OPEN the real card "
+        "with the navigate command IN THE SAME TURN, alongside your text "
+        "answer, so they actually see it. Do NOT make them ask twice and do "
+        "NOT build a new page for it:\n"
+        "    ```command\\n{\"action\": \"navigate\", \"target\": \"<card-slug>\"}\\n```\n"
+        "  - navigate is instant and shows the ACTUAL website gallery card. "
+        "generatePage is ONLY for NEW custom content the site does not "
+        "already have (comparisons, custom layouts, summaries). NEVER use "
+        "generatePage to re-create something that is already a gallery card.\n"
+        "\n"
+        "PAGE-BUILD OVERVIEW (whenever you DO use generatePage):\n"
+        "  - ALWAYS put a short, friendly overview in the reply field FIRST — "
+        "1-2 sentences naming what the page will contain — so the visitor "
+        "sees what is being built before the page finishes rendering. Then "
+        "include the generatePage command. NEVER send generatePage with an "
+        "empty reply."
+    )
+
     # ----- 7. PRESENTATION-MODE BEHAVIOR (only when a deck is playing) -----
     # When the visitor is mid-presentation and asks a side question, the
     # whole point is to NOT disrupt the deck. Be brief, answer in chat,
@@ -23667,7 +23988,40 @@ def api_chat():
         except Exception as _gate_e:
             print(f"[takeover] gate check failed, falling through to AI: {_gate_e}")
         _chat_ctx_token = None   # task 048: reset handle for the turn-context var
+        _early_nav_slug = None   # set when we open a clearly-named card up front
         try:
+            # ---- Instant card navigation (snappy "take me there") ----------
+            # When the visitor clearly NAMES one existing gallery card, opening
+            # that card doesn't need to wait for the whole AI answer to finish
+            # streaming (~2s). We match the message against the LIVE gallery_cards
+            # right here (DB-driven, nothing hard-coded) and, on a confident /
+            # unambiguous hit, emit the navigate command UP FRONT so the card
+            # opens in ~200ms while the text reply streams in after it. The
+            # end-of-stream fallback is skipped for this card and any duplicate
+            # model navigate is dropped, so the visitor is never re-jumped.
+            # Skipped while a presentation deck is on screen.
+            if message and not presentation_active:
+                try:
+                    _ecards = query_db(
+                        "SELECT slug, title FROM gallery_cards "
+                        "WHERE slug IS NOT NULL AND slug <> '' "
+                        "ORDER BY sort_order ASC LIMIT 200"
+                    ) or []
+                    _ecard = _match_gallery_card_in_text(message, _ecards)
+                    if _ecard and _ecard.get("slug"):
+                        _early_nav_slug = _ecard["slug"]
+                        yield (
+                            "data: " + json.dumps({
+                                "type": "command",
+                                "command": {"action": "navigate",
+                                            "target": _early_nav_slug},
+                            }) + "\n\n"
+                        )
+                        print(f"[chat] instant-card nav: visitor said "
+                              f"{message[:60]!r} → navigate '{_early_nav_slug}'")
+                except Exception as _e:
+                    print(f"[chat] instant-card nav skipped: {_e}")
+
             # ---- Streaming tool-call loop ---------------------------------
             # Each pass through the loop opens one streaming completion. We
             # accumulate visible text tokens (forwarding them to the visitor
@@ -24228,6 +24582,100 @@ def api_chat():
                 if act in INTRUSIVE_PRESENTATION_ACTIONS:
                     print(f"[chat] presentation_active: stripping '{act}' command so deck can resume")
                     cmd = None
+            # ---- Deterministic gallery fallback ---------------------------
+            # The visitor chat streams at temperature 0.7, so the model's
+            # command choice for a plain "show me your work" request is
+            # unreliable: it often answers with a text list of project names
+            # (nothing for the visitor to actually look at), or it scrolls to a
+            # work-showcase landing section ("Experiences"/"Highlights") that is
+            # HIDDEN in embed/widget mode — either way the visitor sees nothing.
+            # When the visitor clearly asks to SEE the gallery / work / portfolio
+            # we make sure the actual gallery opens by synthesizing a navigate to
+            # the first gallery card. We fire only when the model returned NO
+            # command, OR when it scrolled to a work-showcase section — we never
+            # touch a deliberate scroll to a DISTINCT section (testimonials,
+            # team, contact, FAQ, pricing). The frontend opens the gallery at the
+            # first card if the slug is missing, so this is safe. Skipped while a
+            # presentation deck is on screen.
+            try:
+                # The model already navigated somewhere deliberately → respect it.
+                _nav_already = isinstance(cmd, dict) and cmd.get("action") == "navigate"
+                # A scroll to a work-showcase section shows nothing in embed mode,
+                # so we still treat that as "no real view opened" and may override.
+                _scrolls_to_showcase = (
+                    isinstance(cmd, dict)
+                    and cmd.get("action") == "scrollToSection"
+                    and re.search(
+                        r'experien|highlight|project|work|gallery|portfolio|showcase',
+                        str(cmd.get("target") or ""), re.I,
+                    )
+                )
+                # Load the live cards ONCE for both fallbacks below. DB-driven —
+                # nothing about which cards exist or what they're called is baked
+                # into the code; it's read fresh from the gallery_cards table.
+                _cards = query_db(
+                    "SELECT slug, title FROM gallery_cards "
+                    "WHERE slug IS NOT NULL AND slug <> '' "
+                    "ORDER BY sort_order ASC LIMIT 200"
+                ) or []
+
+                # ---- (a) SPECIFIC card the visitor named --------------------
+                # If the message clearly refers to ONE existing card — even when
+                # the visitor only NAMES it ("seamless gutters?") with no "show
+                # me" verb — open that exact card so they actually see it. Only
+                # acts when the model didn't already navigate, and the match must
+                # be confident/unambiguous (see _match_gallery_card_in_text).
+                _specific = None
+                if (_cards and not presentation_active
+                        and not _nav_already and not _early_nav_slug):
+                    _specific = _match_gallery_card_in_text(message or "", _cards)
+                    if _specific and ((not cmd) or _scrolls_to_showcase):
+                        _was = cmd.get("action") if isinstance(cmd, dict) else None
+                        cmd = {"action": "navigate", "target": _specific["slug"]}
+                        print(
+                            f"[chat] specific-card fallback: visitor said "
+                            f"{(message or '')[:60]!r} (was={_was}) → navigate "
+                            f"'{_specific['slug']}'"
+                        )
+
+                # ---- (b) GENERIC "show me your work" intent -----------------
+                # "gallery" on its own is an unambiguous request for the gallery.
+                # Everything else (work/projects/photos/portfolio/examples) must
+                # be paired with a SEE/SHOW-type verb so we don't false-trigger on
+                # unrelated uses ("investment portfolio", "portfolio pricing").
+                # Only runs when no specific card was matched above.
+                if not _specific:
+                    _gallery_intent = re.search(
+                        r'\bgallery\b'
+                        r'|\b(?:show|see|view|look|browse|check|got|have|any)\b'
+                        r'[\w\s]{0,30}'
+                        r'\b(?:work|projects?|photos?|pictures?|images?|examples?|portfolio)\b',
+                        message or "", re.I,
+                    )
+                    if (
+                        _gallery_intent
+                        and not presentation_active
+                        and ((not cmd) or _scrolls_to_showcase)
+                        and _cards
+                    ):
+                        _first = _cards[0]
+                        if _first and _first.get("slug"):
+                            _was = cmd.get("action") if isinstance(cmd, dict) else None
+                            cmd = {"action": "navigate", "target": _first["slug"]}
+                            print(
+                                f"[chat] gallery-intent fallback: visitor said "
+                                f"{(message or '')[:60]!r} (was={_was}) → navigate "
+                                f"'{_first['slug']}'"
+                            )
+            except Exception as _e:
+                print(f"[chat] gallery fallback skipped: {_e}")
+
+            # We already opened the named card up front (instant nav) — drop a
+            # late/duplicate navigate so the visitor isn't re-jumped after the
+            # answer finishes streaming. Non-navigate commands are kept as-is.
+            if _early_nav_slug and isinstance(cmd, dict) and cmd.get("action") == "navigate":
+                cmd = None
+
             if reply:
                 _va["final"] = reply
                 yield f"data: {json.dumps({'type': 'text', 'content': reply})}\n\n"
@@ -24783,6 +25231,7 @@ def admin_dashboard():
     return render_template(
         "admin/dashboard.html",
         has_feature=tenant_has_feature,
+        feature_visible=tenant_feature_visible,
         is_super_admin=_is_super_admin,
         appearance=_admin_appearance(),
         # task 092 P1 — browser Sentry boot block ("" when no DSN). |safe in tpl.
@@ -27407,6 +27856,7 @@ def admin_update_chatbot():
              api_endpoint = %s, embed_code = %s, system_prompt = %s,
              brand_voice = %s,
              agent_scope_tightness = %s,
+             theme = %s::jsonb,
              updated_at = NOW()
            WHERE id = 1 RETURNING *""",
         (
@@ -27422,6 +27872,10 @@ def admin_update_chatbot():
             _system_prompt_value,
             _brand_voice_value,
             scope_in,
+            # Visual theme for the public chat widget (JSONB). Stored as-is;
+            # the public side reads it with per-key fallbacks, so an empty {}
+            # means "use the built-in look".
+            json.dumps(data.get("theme") or {}),
         )
     )
     # Bump the cache content_version when the system_prompt OR brand_voice

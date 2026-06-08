@@ -24,7 +24,7 @@
   var S = {
     apiBase: "", embedKey: "", mount: null, sessionId: "", visitorId: "",
     settings: {}, gallery: [], history: [], open: false,
-    els: {}, immersive: null,
+    els: {}, immersive: null, theme: {},
     lastAgentMsgId: 0, _agentPollTimer: null,   // 095 §2.4 P3 human-takeover poll
   };
 
@@ -137,24 +137,81 @@
     return safe;
   }
 
+  /* ---- Brand theme ------------------------------------------------------
+   * The widget brand-matches the site by reading the public /api/theme feed
+   * (fetched at init into S.theme) instead of the host page's CSS variables: a
+   * third-party host (e.g. WordPress) has none of the site's theme vars, so
+   * reading them there would always yield the generic fallback palette. We map
+   * the theme_* feed onto the --aap-* / --color-* / --font-* variables the
+   * widget CSS and the immersive iframe already consume.
+   * --------------------------------------------------------------------- */
+  function fontFamily(name, fallback) {
+    name = (name == null ? "" : String(name)).trim();
+    return name ? "'" + name + "', " + fallback : fallback;
+  }
   function themeVars() {
-    var cs = getComputedStyle(document.documentElement);
-    function v(name, dflt) { return (cs.getPropertyValue(name) || "").trim() || dflt; }
+    var t = S.theme || {};
+    function v(key, dflt) { var x = (t[key] == null ? "" : String(t[key])).trim(); return x || dflt; }
     return {
-      serif: v("--font-serif", "'Playfair Display', Georgia, serif"),
-      sans: v("--font-sans", "'DM Sans', system-ui, sans-serif"),
-      bg: v("--color-bg", "#060b14"), accent: v("--color-accent", "#c9a96e"),
-      text: v("--color-text", "#e4e4e7"),
-      glassBorder: v("--glass-border", "rgba(255,255,255,0.08)"),
-      glassBg: v("--glass-bg", "rgba(255,255,255,0.03)"),
-      hero: v("--hero-image", "none"),
+      serif: fontFamily(t.theme_font_serif, "'Playfair Display', Georgia, serif"),
+      sans: fontFamily(t.theme_font_sans, "'DM Sans', system-ui, sans-serif"),
+      bg: v("theme_bg", "#060b14"), accent: v("theme_accent", "#c9a96e"),
+      text: v("theme_text", "#e4e4e7"),
+      glassBorder: v("theme_glass_border", "rgba(255,255,255,0.08)"),
+      glassBg: v("theme_glass_bg", "rgba(255,255,255,0.03)"),
+      hero: "none",
     };
+  }
+
+  // Apply the brand palette/fonts as inline CSS vars on a widget element. Only
+  // values actually present in the theme feed are set, so empty fields keep the
+  // CSS defaults (e.g. the glass panel stays opaque, not near-invisible).
+  function applyThemeVars(el) {
+    if (!el || !el.style) return;
+    var t = S.theme || {};
+    function set(prop, val) {
+      val = (val == null ? "" : String(val)).trim();
+      if (val) el.style.setProperty(prop, val);
+    }
+    set("--aap-accent", t.theme_accent);
+    set("--aap-bg", t.theme_glass_bg);
+    set("--aap-border", t.theme_glass_border);
+    set("--aap-text", t.theme_text);
+    if ((t.theme_font_serif == null ? "" : String(t.theme_font_serif)).trim())
+      el.style.setProperty("--aap-serif", fontFamily(t.theme_font_serif, "Georgia, serif"));
+    if ((t.theme_font_sans == null ? "" : String(t.theme_font_sans)).trim())
+      el.style.setProperty("--aap-sans", fontFamily(t.theme_font_sans, "system-ui, sans-serif"));
+  }
+
+  // Google Fonts <link> for the themed fonts (the brand fonts likely aren't
+  // loaded on a third-party host). Best-effort, injected once into the host
+  // document head; a document-level @font-face still reaches the Shadow DOM.
+  function googleFontsHref() {
+    var t = S.theme || {}, fams = [];
+    function add(name) {
+      name = (name == null ? "" : String(name)).trim();
+      if (name) fams.push("family=" + encodeURIComponent(name).replace(/%20/g, "+") + ":wght@400;500;600;700");
+    }
+    add(t.theme_font_serif); add(t.theme_font_sans);
+    return fams.length ? "https://fonts.googleapis.com/css2?" + fams.join("&") + "&display=swap" : "";
+  }
+  function ensureFontsLoaded() {
+    var href = googleFontsHref();
+    if (!href) return;
+    try {
+      if (document.querySelector("link[data-aap-fonts]")) return;
+      var l = document.createElement("link");
+      l.rel = "stylesheet"; l.href = href; l.setAttribute("data-aap-fonts", "1");
+      document.head.appendChild(l);
+    } catch (e) {}
   }
 
   function buildImmersiveDoc(token) {
     var t = themeVars();
+    var fhref = googleFontsHref();
+    var fontLink = fhref ? '<link rel="stylesheet" href="' + esc(fhref) + '">' : "";
     return '<!DOCTYPE html><html><head><meta charset="utf-8">' +
-      '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+      '<meta name="viewport" content="width=device-width, initial-scale=1">' + fontLink +
       '<style>:root{--font-serif:' + t.serif + ';--font-sans:' + t.sans +
       ';--color-bg:' + t.bg + ';--color-accent:' + t.accent + ';--color-text:' + t.text +
       ';--glass-border:' + t.glassBorder + ';--glass-bg:' + t.glassBg + ';--hero-image:' + t.hero + ';}' +
@@ -467,7 +524,12 @@
     overlay.className = "aap-overlay";
     overlay.innerHTML = '<button class="aap-ov-close" aria-label="Close">×</button>' +
       '<div class="aap-ov-side"></div><div class="aap-frame-host"></div><div class="aap-gallery"></div>';
-    document.body.appendChild(overlay);
+    // Mount the fullscreen overlay INSIDE the shadow root (S.mount), not on
+    // document.body — otherwise the widget's scoped stylesheet (injected into
+    // the shadow) never reaches it and the rich/gallery overlay renders unstyled
+    // on a third-party host. The shadow host is position:fixed with no transform,
+    // so the overlay's own position:fixed stays viewport-relative (fullscreen).
+    (S.mount || document.body).appendChild(overlay);
 
     S.els = {
       root: root, overlay: overlay,
@@ -477,6 +539,10 @@
       barInput: root.querySelector(".aap-bar input"),
       footInput: root.querySelector(".aap-foot input"),
     };
+
+    // Brand-match the widget shell + the immersive overlay to the site palette.
+    applyThemeVars(root);
+    applyThemeVars(overlay);
 
     root.querySelector(".aap-bar").addEventListener("click", function (e) {
       if (e.target.classList.contains("aap-mic")) { return; }
@@ -525,8 +591,14 @@
     var pGallery = fetch(api("/api/gallery-cards"), { headers: hdrs() })
       .then(function (r) { return r.ok ? r.json() : []; })
       .then(function (g) { S.gallery = g || []; }).catch(function () { S.gallery = []; });
+    // Pull the site's palette + fonts so the widget brand-matches the host site
+    // (works cross-origin because /api/theme is in the embeddable-prefix list).
+    var pTheme = fetch(api("/api/theme"), { headers: hdrs() })
+      .then(function (r) { return r.ok ? r.json() : {}; })
+      .then(function (t) { S.theme = t || {}; }).catch(function () { S.theme = {}; });
 
-    return Promise.all([pSettings, pGallery]).then(function () {
+    return Promise.all([pSettings, pGallery, pTheme]).then(function () {
+      ensureFontsLoaded();
       buildDom();
       if (global.VoiceAgent) {
         global.VoiceAgent.init({ apiBase: S.apiBase, embedKey: S.embedKey }).then(function () {

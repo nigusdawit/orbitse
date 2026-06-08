@@ -399,13 +399,21 @@ class TestBundleListDriftDetection:
         local_scripts = set(local_script_re.findall(index_html))
         bundled = set(asset_bundle.BUNDLE_SOURCES)
 
+        # Intentionally-standalone scripts that must stay as their own
+        # <script defer> tag and NOT be folded into the homepage bundle.
+        # widget-bridge.js is the embed iframe-resize bridge — a no-op on
+        # normal pages, loaded separately on purpose (see public/index.html +
+        # the file header). It's served on /widget-bridge.js, not bundled.
+        standalone_ok = {"widget-bridge.js"}
+
         # After bundling, the only local script reference in
         # public/index.html should be the bundle URL itself, which has
         # the form `bundle.{hash}.min.js` and is NOT pre-listed in
         # BUNDLE_SOURCES (it's the OUTPUT, not a source).
         unbundled = {
             s for s in local_scripts
-            if s not in bundled and not re.match(r"bundle\.[a-f0-9]{12}\.min\.js$", s)
+            if s not in bundled and s not in standalone_ok
+            and not re.match(r"bundle\.[a-f0-9]{12}\.min\.js$", s)
         }
         assert not unbundled, (
             f"Local JS files referenced in index.html but not in "

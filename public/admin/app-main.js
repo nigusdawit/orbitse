@@ -1929,6 +1929,23 @@
         const prompts = settings.quick_prompts || [];
         document.getElementById('chatbot-quick-prompts').value = prompts.join('\n');
 
+        /* Chat widget theme — each control falls back to the built-in look. */
+        const theme = settings.theme || {};
+        const _shape = document.getElementById('chatbot-theme-shape');
+        if (_shape) _shape.value = theme.shape || 'pill';
+        const _glass = document.getElementById('chatbot-theme-glass');
+        if (_glass) _glass.checked = theme.glass !== false; /* default ON */
+        const _glassMode = document.getElementById('chatbot-theme-glass-mode');
+        if (_glassMode) _glassMode.value = theme.glass_mode === 'light' ? 'light' : 'dark';
+        const _tintEn = document.getElementById('chatbot-theme-tint-enabled');
+        const _tint = document.getElementById('chatbot-theme-tint');
+        if (_tintEn) _tintEn.checked = !!theme.tint;
+        if (_tint && theme.tint) _tint.value = theme.tint;
+        const _textEn = document.getElementById('chatbot-theme-text-enabled');
+        const _text = document.getElementById('chatbot-theme-text');
+        if (_textEn) _textEn.checked = !!theme.text_color;
+        if (_text && theme.text_color) _text.value = theme.text_color;
+
         /* Agent scope tightness — only show when the feature is enabled. */
         const scopeSection = document.getElementById('chatbot-scope-section');
         const scopeShown = !!(settings._features && settings._features.agent_scope_slider);
@@ -1977,6 +1994,24 @@
       document.getElementById('chatbot-embed-settings').style.display = mode === 'embed' ? 'block' : 'none';
     }
 
+    /* Assemble the chat-widget theme object from the admin controls. Omits
+       optional colors when their "custom" checkbox is off so the public side
+       falls back to its built-in defaults. */
+    function buildChatbotThemePayload() {
+      const theme = {
+        shape: (document.getElementById('chatbot-theme-shape') || {}).value || 'pill',
+        glass: !!(document.getElementById('chatbot-theme-glass') || {}).checked,
+        glass_mode: (document.getElementById('chatbot-theme-glass-mode') || {}).value || 'dark'
+      };
+      if ((document.getElementById('chatbot-theme-tint-enabled') || {}).checked) {
+        theme.tint = (document.getElementById('chatbot-theme-tint') || {}).value || '';
+      }
+      if ((document.getElementById('chatbot-theme-text-enabled') || {}).checked) {
+        theme.text_color = (document.getElementById('chatbot-theme-text') || {}).value || '';
+      }
+      return theme;
+    }
+
     async function saveChatbotSettings() {
       /* Convert newline-separated prompts to array */
       const promptsText = document.getElementById('chatbot-quick-prompts').value;
@@ -1995,7 +2030,8 @@
         quick_prompts: quickPrompts,
         api_endpoint: document.getElementById('chatbot-api-endpoint').value,
         embed_code: document.getElementById('chatbot-embed-code').value,
-        agent_scope_tightness: (document.getElementById('chatbot-scope-tightness') || {}).value || 'balanced'
+        agent_scope_tightness: (document.getElementById('chatbot-scope-tightness') || {}).value || 'balanced',
+        theme: buildChatbotThemePayload()
       };
 
       /* Only the super-admin has the prompt editor; only then do we send the
@@ -15924,13 +15960,24 @@
                 ${f.is_addon ? ' · <span style="color:#fbbf24;">add-on</span>' : ''}
               </div>
             </div>
-            <label class="toggle-switch" style="display:inline-flex; align-items:center; gap:0.5rem; cursor:pointer;">
-              <input type="checkbox" ${f.enabled ? 'checked' : ''}
-                     data-feature="${escapeHTML(f.name)}"
-                     onchange="togglePlanFeature(this)"
-                     data-testid="toggle-feature-${escapeHTML(f.name)}">
-              <span style="font-size:0.875rem; color:${f.enabled ? '#10b981' : 'var(--admin-text-muted)'};">${f.enabled ? 'On' : 'Off'}</span>
-            </label>
+            <div style="display:flex; gap:1.25rem; align-items:center;">
+              <label class="toggle-switch" style="display:inline-flex; align-items:center; gap:0.5rem; cursor:pointer;" title="Backend function on/off — when off, the feature's API returns feature_disabled.">
+                <input type="checkbox" ${f.enabled ? 'checked' : ''}
+                       data-feature="${escapeHTML(f.name)}"
+                       data-field="enabled"
+                       onchange="togglePlanFeature(this)"
+                       data-testid="toggle-feature-${escapeHTML(f.name)}">
+                <span style="font-size:0.8125rem; color:${f.enabled ? '#10b981' : 'var(--admin-text-muted)'};">Function</span>
+              </label>
+              <label class="toggle-switch" style="display:inline-flex; align-items:center; gap:0.5rem; cursor:pointer;" title="Show this in the client's menu/tabs. Independent of Function — leave both matched for the classic on/off.">
+                <input type="checkbox" ${f.visible ? 'checked' : ''}
+                       data-feature="${escapeHTML(f.name)}"
+                       data-field="visible"
+                       onchange="togglePlanFeature(this)"
+                       data-testid="toggle-visible-${escapeHTML(f.name)}">
+                <span style="font-size:0.8125rem; color:${f.visible ? '#3b82f6' : 'var(--admin-text-muted)'};">Visible</span>
+              </label>
+            </div>
           </div>
         `).join('')}
       `).join('');
@@ -15938,25 +15985,28 @@
 
     async function togglePlanFeature(input) {
       const name = input.getAttribute('data-feature');
-      const enabled = input.checked;
+      // 'enabled' = backend function gate; 'visible' = UI visibility (separate knob).
+      const field = input.getAttribute('data-field') || 'enabled';
+      const value = input.checked;
       input.disabled = true;
       try {
         const res = await fetch('/admin/api/tenant/features/' + encodeURIComponent(name), {
           method: 'PATCH',
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled }),
+          body: JSON.stringify({ [field]: value }),
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           throw new Error(err.detail || err.error || 'HTTP ' + res.status);
         }
-        showToast('Feature "' + name + '" ' + (enabled ? 'enabled' : 'disabled'));
+        const label = field === 'visible' ? 'visibility' : 'function';
+        showToast('Feature "' + name + '" ' + label + ' ' + (value ? 'on' : 'off'));
         loadPlansFeatures();
       } catch (e) {
         console.error('toggle failed', e);
         window.appReportError(e, 'app-main.js:togglePlanFeature');
-        input.checked = !enabled;
+        input.checked = !value;
         showToast('Failed to toggle: ' + (e.message || e), 'error');
       } finally {
         input.disabled = false;

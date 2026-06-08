@@ -1,0 +1,116 @@
+---
+name: Embed widget — iframe of the real homepage + band sizing
+description: The live embeddable concierge is an iframe of the REAL homepage in widget mode, not a Shadow-DOM copy; sizing it has a vh deadlock trap.
+---
+
+# Embed widget: how it's actually mounted, and the iframe band-sizing trap
+
+The live embeddable concierge is the **REAL homepage** loaded in a cross-origin
+`<iframe>` in "widget mode" (`html.aap-widget`, set by an early inline script in
+`public/index.html` keyed on the `/embed/concierge` path). `embed/loader.js`
+mounts that iframe on the host page; `public/widget-bridge.js` runs inside it.
+This gives byte-for-byte parity (chat, voice, generatePage, canvas) and perfect
+style isolation — there is **no reimplementation** to keep in sync.
+
+**Why:** an earlier design used a Shadow-DOM copy under `embed/widget/*` (+ an
+`admin_ai_platform/web/*` mirror). That copy is **legacy / not served** for the
+concierge embed now — don't chase the "two copies" / Shadow-DOM overlay trap for
+the live widget; edit the homepage + its CSS/JS instead.
+
+## The iframe band-sizing deadlock (the big trap)
+The loader sizes the iframe to a **bottom band** so the host page stays
+clickable above it, and the bridge reports the needed band height. Inside the
+iframe, `window.innerHeight` / `vh` **IS that band** — i.e. the thing we're
+trying to compute. So anything that sizes off the iframe's own viewport
+self-references and deadlocks at a too-small size:
+- a CSS panel cap like `max-height: 70vh` → small band → small 70vh → small
+  panel → small band; the panel renders clipped to a sliver.
+- the bridge capping its reported band at `window.innerHeight` → pins the band to
+  its current height so a taller surface (the expanded chat panel) can never
+  grow into view.
+
+**How to apply:** size off the **HOST** viewport, not the iframe's. `loader.js`
+posts the host `window.innerHeight` to the iframe (`{__aap:"aap-host",
+type:"hostsize", vh}`, scoped to the concierge origin); the bridge stores it in
+`--aap-host-vh` and uses it (not iframe vh) to cap the band; widget-mode CSS
+sizes `#chatbot-panel` off `--aap-host-vh`. The loader also caps the iframe at
+the host height as a backstop. Bridge trusts only `ev.source === window.parent`.
+
+## Modal vs. band
+Page-covering surfaces go fullscreen via bridge `isModal()`: `#split-overlay`,
+`#immersive-page-overlay`, **and** `#gallery-view`/`#sphere-view` (both `.active`).
+The expanded chat panel is just a bottom-anchored card — it's a `FLOAT_IDS`
+member measured into the band so the host stays clickable, like the main site.
+
+**Two-part rule for any fullscreen view in the embed (learned via the gallery
+card not showing):** a page-covering view needs BOTH (1) an `isModal()` entry in
+`widget-bridge.js` so the iframe expands to fullscreen, AND (2) a widget-mode CSS
+override `html.aap-widget #<id>.active { display:block !important; }` — because
+the widget block hard-hides `#gallery-view`/`#sphere-view`/`#landing-view` with
+`display:none !important`, so toggling only `.active` (showGallery/showSphereView)
+leaves it invisible. Miss either half and the view silently never renders.
+**Why it surfaced:** a prompt-only fix steered the AI's `navigate` command to open
+the real gallery card (`showGallery()` → `#gallery-view.active`) instead of
+generating a page (`#immersive-page-overlay`, which already was modal) — exposing
+that the gallery path had neither half wired for the embed.
+
+## Widget-mode surfaces need an explicit dark backdrop
+In widget mode the page is transparent (floats over the host). The frosted-glass
+concierge surfaces (`#chatbot-bar`, `#chatbot-panel`, `#side-chat-panel`) are
+designed to sit over the site's own dark bg, so over a **light** host they read
+faint/unreadable unless given an opaque dark backdrop derived from the theme
+base color. **Gotcha:** the proactive welcome card is `#chatbot-panel` (not
+`#side-chat-panel`) — the dark rule must cover all three surfaces.
+
+## Clip-path tightly clips the iframe → kills shadows, chases animations
+`loader.js` applies a `clip-path` that hugs each visible surface's rect (the
+bridge reports `surfaceRects`) so the transparent gaps pass clicks to the host.
+Two visual gotchas fall out of that, both fixed in the `html.aap-widget` CSS
+block:
+- a surface's `box-shadow` gets **hard-cut** by the clip into an ugly grey
+  rectangle ("shade"). Kill `box-shadow` on every widget floating surface
+  (`#chatbot-panel`, `#side-chat-panel`, `.voice-intro-card`,
+  `.page-archive-bubble`/`-btn`, `.page-archive-popover`) — not just the pill.
+- if a surface slides/fades open over several frames, the clip **chases** it
+  frame-by-frame → flicker. Set `transition:none` on those same surfaces
+  (keyframe `animation` like the typing dots is left intact).
+
+## Animating the iframe HEIGHT (smooth expand) without clip flicker
+The iframe is **bottom-anchored** and its `clip-path` coords are **top-left
+relative**, so while the height animates the box's top edge moves and a clip
+computed for the FINAL height cuts/reveals content mid-animation (flicker).
+**Fix:** give `loader.js` a `transition:height` for a smooth expand, but CLEAR
+the clip the moment a height change starts and re-apply it on the iframe's own
+`transitionend` (propertyName `height`) — with a ~300ms timeout fallback so it
+can never get stuck cleared (throttled/background tabs). Cancel that pending
+reapply in `setExpanded()` and whenever a same-height (rects-only) update lands.
+**Trade-off:** while the clip is cleared the full-width band briefly intercepts
+host clicks — acceptable because it's only during the user's own expand gesture
+and ends as soon as the animation does. Tiny (<2px) height jitters skip the
+animation path and re-clip instantly.
+
+**Only animate DELIBERATE changes — snap the load-time settling (or it shakes):**
+the bridge reports MANY small height changes right after load as content settles
+(web fonts swapping, lucide icons rendering, text reflow, thinking-dots toggle).
+If `transition:height` animates every one, the panel visibly shakes/bounces on
+load. **Fix:** in `setCollapsed()` branch on the height delta — `<=2px` rect-only
+re-clip; `<ANIM_MIN` (~48px) is settling jitter, SNAP it (set `transition:none`,
+set height, force a reflow with `void offsetHeight`, restore the saved transition,
+re-clip instantly); only `>=ANIM_MIN` (panel open/close, fullscreen) gets the
+smooth animate+clip-reapply path. **Why 48:** above typical settling jitter
+(a few–tens of px) but below a real panel open (>100px). Medium popovers may snap
+rather than glide — acceptable; killing the startup shake matters more.
+
+## Band/clip need TOP headroom for above-bar UI
+Hover tooltips (`.chatbot-icon-btn::after`, "Visualize" etc.) and the AI
+"thinking" three-dots render **above** the bar, outside each surface's own box.
+A uniform small pad clips them at the iframe's top edge. **Fix:** the bridge uses
+asymmetric padding — `SIDE_PAD` (~8px) on left/right/bottom but a larger
+`TOP_PAD` (~44px) added to BOTH `bandHeight()` (so the band grows taller) and
+each rect's top in `surfaceRects()` (so the clip extends above the surface).
+
+## Cache-busting
+`public/styles.css` is referenced with `?v=_STYLES_CSS_VERSION` (regex-injected
+in `app.py`) — bump it on visible CSS changes. `/embed/concierge`,
+`/widget-bridge.js`, and `/embed/loader.js` are served `no-cache`, so JS edits
+reach embeds without a version bump.

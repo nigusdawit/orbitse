@@ -622,14 +622,20 @@ if _CLIENT_MODE:
 # hammering the DB on every tool dispatch.
 _FEATURE_CACHE = {}
 _FEATURE_CACHE_TTL_SEC = 30
+# Parallel cache for the SEPARATE visibility knob (see tenant_feature_visible).
+# Kept distinct from _FEATURE_CACHE so the (enabled, expires) tuple shape the
+# existing readers rely on stays unchanged.
+_FEATURE_VIS_CACHE = {}
 
 def invalidate_tenant_features_cache(tenant_id=None):
     """Drop cached feature lookups so flag flips take effect immediately."""
-    global _FEATURE_CACHE
+    global _FEATURE_CACHE, _FEATURE_VIS_CACHE
     if tenant_id is None:
         _FEATURE_CACHE = {}
+        _FEATURE_VIS_CACHE = {}
     else:
         _FEATURE_CACHE = {k: v for k, v in _FEATURE_CACHE.items() if k[0] != tenant_id}
+        _FEATURE_VIS_CACHE = {k: v for k, v in _FEATURE_VIS_CACHE.items() if k[0] != tenant_id}
 
 
 def _ensure_tenant_feature_row(tenant_id, feature_name):
@@ -691,6 +697,58 @@ def tenant_has_feature(name, tenant_id=None):
     _FEATURE_CACHE[cache_key] = (enabled, now + _FEATURE_CACHE_TTL_SEC)
     return enabled
 
+
+def tenant_feature_visible(name, tenant_id=None):
+    """Return True if feature `name`'s UI should be SHOWN to the tenant.
+
+    Visibility is a SEPARATE knob from the function gate (`enabled`):
+      - `enabled`  → does the backend function run (enforce_feature_flags).
+      - `visible`  → does the client see the sidebar link / tab in the admin UI.
+
+    The `visible` column is nullable; NULL means "inherit from enabled" so a site
+    that never touches visibility behaves exactly as before (shown iff enabled).
+    Once an operator sets visibility explicitly, the two move independently — e.g.
+    function ON + visible OFF (works but hidden from the menu) or function OFF +
+    visible ON (shown as a teaser, but the API still returns feature_disabled).
+
+    Unknown names fail OPEN (visible), matching tenant_has_feature, so adding a
+    new gate to the code without a registry update never hides something silently.
+    """
+    if tenant_id is None:
+        tenant_id = current_tenant_id()
+    cache_key = (tenant_id, name)
+    cached = _FEATURE_VIS_CACHE.get(cache_key)
+    now = _time.time()
+    if cached is not None and cached[1] > now:
+        return cached[0]
+
+    if name not in _FEATURE_NAMES:
+        _FEATURE_VIS_CACHE[cache_key] = (True, now + _FEATURE_CACHE_TTL_SEC)
+        return True
+
+    try:
+        row = query_db(
+            "SELECT enabled, visible FROM tenant_features "
+            "WHERE tenant_id = %s AND feature_name = %s",
+            (tenant_id, name),
+            fetchone=True,
+        )
+        if row is None:
+            _ensure_tenant_feature_row(tenant_id, name)
+            # Fresh row has visible = NULL → inherit the registry-default enabled.
+            visible = _FEATURE_DEFAULTS.get(name, True)
+        else:
+            vis_raw = row.get("visible")
+            # NULL visible → inherit the enabled flag (back-compat default).
+            visible = bool(row.get("enabled")) if vis_raw is None else bool(vis_raw)
+    except Exception as e:
+        print(f"[features] tenant_feature_visible({name}) failed: {e}; failing open")
+        visible = True
+
+    _FEATURE_VIS_CACHE[cache_key] = (visible, now + _FEATURE_CACHE_TTL_SEC)
+    return visible
+
+
 def list_tenant_features(tenant_id=None):
     """Return the full feature roster for the Plans & Features UI.
 
@@ -703,13 +761,15 @@ def list_tenant_features(tenant_id=None):
     out = []
     for name, label, plan_tier, default_enabled, group in _FEATURE_REGISTRY:
         enabled = tenant_has_feature(name, tenant_id)
+        visible = tenant_feature_visible(name, tenant_id)
         out.append({
             "name": name,
             "label": label,
             "plan_tier": plan_tier,
             "default_enabled": default_enabled,
             "group": group,
-            "enabled": enabled,
+            "enabled": enabled,    # backend function gate
+            "visible": visible,    # UI visibility (separate knob; inherits enabled when unset)
         })
     return out
 
@@ -728,6 +788,29 @@ def set_tenant_feature(name, enabled, tenant_id=None, note=""):
     )
     invalidate_tenant_features_cache(tenant_id)
     return bool(enabled)
+
+def set_tenant_feature_visible(name, visible, tenant_id=None):
+    """Set a feature's UI visibility for a tenant — SEPARATE from `enabled`.
+
+    Writes only the `visible` column, so the backend function gate (`enabled`)
+    is left exactly as it was. For a brand-new row we seed `enabled` from the
+    registry default so the function gate keeps its expected starting value.
+    Returns the new visible bool.
+    """
+    if tenant_id is None:
+        tenant_id = current_tenant_id()
+    if name not in _FEATURE_NAMES:
+        raise ValueError(f"Unknown feature: {name}")
+    default_enabled = _FEATURE_DEFAULTS.get(name, True)
+    execute_db(
+        "INSERT INTO tenant_features (tenant_id, feature_name, enabled, visible) "
+        "VALUES (%s, %s, %s, %s) "
+        "ON CONFLICT (tenant_id, feature_name) DO UPDATE "
+        "SET visible = EXCLUDED.visible, updated_at = NOW()",
+        (tenant_id, name, default_enabled, bool(visible)),
+    )
+    invalidate_tenant_features_cache(tenant_id)
+    return bool(visible)
 
 # Route-prefix → feature_name map. The before_request hook below blocks
 # any HTTP request whose path starts with one of these prefixes when
@@ -1331,9 +1414,17 @@ Before picking a command, walk this list IN ORDER and stop at the first match.
 Building a new page from scratch is your LAST resort, not your first instinct —
 it is slow for the visitor and duplicates content the site already has.
 
-  1. Does the visitor's question map to ONE specific gallery card listed
-     under GALLERY CARDS below (a product, service, item, etc.)?
-       → use navigate with that card's slug. STOP.
+  1. Does the visitor's question map to a gallery card listed under
+     GALLERY CARDS below (a product, service, item, etc.)? This includes
+     BROAD requests to SEE your visual work — "show me your past
+     projects / work / photos / portfolio", "do you have examples",
+     "let me see your gallery", "what have you done".
+       → use navigate. For one specific item use that card's slug; for a
+         broad "show me your work" request use the FIRST / most relevant
+         gallery card's slug (navigating opens the gallery so they can
+         browse the rest). Reply with ONE short sentence + the navigate
+         command — never just a text list of project names, which leaves
+         the visitor with nothing to look at. STOP.
 
   2. Does the visitor's question map to a whole landing-page section
      listed under LANDING PAGE LAYOUT below (testimonials, team, FAQ,
@@ -1785,6 +1876,7 @@ else stays on the landing page with your response displayed prominently.
 RULES:
 - **DECISION PRIORITY GOVERNS** — Always run the DECISION PRIORITY checklist at the top of this prompt FIRST. navigate / scrollToSection / showSavedPage all win over generatePage when they apply. Only generate a fresh page when nothing existing answers the question.
 - **NAVIGATION IS YOUR PRIMARY TOOL** — When the visitor asks about, mentions, or shows interest in ANY specific gallery item (room, product, service, etc.), you MUST use the navigate command to take them there. 1 sentence of text + navigate command. Do NOT just describe an item in text — SHOW them by navigating. Do NOT build a generatePage about an item that already has a gallery card.
+- **BROAD "show me your work" → still navigate** — When the visitor asks generally to see your work/projects/photos/portfolio/gallery (no single item named), navigate to the FIRST / most relevant gallery card. That opens the gallery so they can browse the rest. Do NOT reply with only a text list of project names, and do NOT generatePage — the gallery already exists, so SHOW it.
 - **"SHOW ME" routing**: When the visitor says "show me X" / "let me see X" / "visualize X":
     • If X is a gallery card → navigate (do NOT generatePage).
     • If X is a section (reviews, team, FAQ, events, contact, etc.) → scrollToSection (do NOT generatePage).

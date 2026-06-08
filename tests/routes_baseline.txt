@@ -286,6 +286,7 @@ GET /booking/<string:token>/cancel
 GET /booking/<string:token>/contract
 GET /booking/<string:token>/success
 GET /bundle.<bundle_hash>.min.js
+GET /embed/concierge
 GET /embed/diagnostics
 GET /embed/loader.js
 GET /event/<string:slug>

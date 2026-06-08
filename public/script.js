@@ -5854,10 +5854,58 @@ async function initChatbot() {
  * - Quick prompt chips
  * - Event listeners for input fields
  */
+/* Apply the admin-configured chat-widget theme by setting CSS variables on the
+   document root. Every key is optional and falls back to the built-in look, so
+   an empty theme ({}) changes nothing. Keeps the styling in CSS — this only
+   computes the variable values from the saved theme object. */
+function applyChatbotTheme(theme) {
+  theme = theme || {};
+  const root = document.documentElement;
+
+  /* Pill shape -> bar border-radius. */
+  const shapeRadius = { pill: '9999px', rounded: '1.25rem', square: '0.5rem' };
+  root.style.setProperty('--chatbot-radius', shapeRadius[theme.shape] || '9999px');
+
+  /* Glassmorphic blur on/off (default ON). */
+  const glassOn = theme.glass !== false;
+  root.style.setProperty('--chatbot-blur', glassOn ? '16px' : '0px');
+
+  /* Frost contrast base: light -> dark text, dark -> light text. */
+  const lightMode = theme.glass_mode === 'light';
+
+  /* Surface color = custom tint when set, else the frost base. */
+  function hexToRgb(hex) {
+    const m = /^#?([0-9a-f]{6})$/i.exec((hex || '').trim());
+    if (!m) return null;
+    const n = parseInt(m[1], 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+  const baseRgb = hexToRgb(theme.tint) || (lightMode ? [255, 255, 255] : [12, 18, 32]);
+  const rgb = baseRgb.join(', ');
+
+  /* Translucent surface for the main site (lets the glass show through) plus a
+     near-solid variant for widget mode, where the iframe floats over an
+     arbitrary host and needs enough opacity to stay readable. */
+  const alpha = glassOn ? 0.55 : 0.96;
+  root.style.setProperty('--chatbot-surface-bg', 'rgba(' + rgb + ', ' + alpha + ')');
+  root.style.setProperty('--chatbot-surface-bg-solid', 'rgba(' + rgb + ', 0.96)');
+
+  /* Hairline border tuned to the frost base for definition. */
+  root.style.setProperty('--chatbot-surface-border',
+    lightMode ? 'rgba(0, 0, 0, 0.12)' : 'rgba(255, 255, 255, 0.18)');
+
+  /* Text color: custom when set, else high-contrast for the chosen frost. */
+  root.style.setProperty('--chatbot-text',
+    theme.text_color || (lightMode ? '#1a1f2b' : '#ffffff'));
+}
+
 function setupBuiltinChat() {
   /* Show the chatbot container */
   const container = document.getElementById('chatbot-container');
   if (container) container.style.display = '';
+
+  /* Apply the saved chat-widget theme (shape, glass, colors). */
+  applyChatbotTheme(chatSettings.theme);
 
   /* Update agent avatar across all locations.
      If agent_avatar is a URL or path (starts with / or http), show it as an image.
@@ -6305,17 +6353,19 @@ async function chatSendStreaming(message, wasCollapsed) {
     let displayTokens = '';
     let finalReply = '';
     let pendingCommand = null;
+    let earlyNavDone = false;   /* a navigate command already ran on arrival */
     let inCommandBlock = false;
     let streamBubble = null;
     let bubbleFinalized = false;
     let wasPaused = false;   /* 095 §2.4 P3: set when the server emits a 'paused' marker (human takeover) */
     let expandedForResponse = false;
-    /* Live page-render state — set when we detect a generatePage/generateHTML
-       command early in the stream so the iframe renders HTML progressively
-       as tokens arrive. `pageStreamWritten` tracks how many decoded HTML
-       chars have already been appended so we only flush the new delta. */
-    let pageStreamStarted = false;
-    let pageStreamWritten = 0;
+    /* Page-build tracking. We deliberately no longer live-render the page as it
+       streams in. Instead the visitor reads a short overview that streams into a
+       normal chat bubble first, and the finished page is rendered ONCE — when
+       the complete command arrives (see the generatePage handler). We only flag
+       that a page build is underway so the cut-off / empty-reply safety nets
+       below behave correctly. */
+    let pageBuildDetected = false;
     /* Availability snapshots streamed back from lookup_service_availability
        — captured as they arrive but rendered as tap-to-pick chip cards
        AFTER the assistant's final reply bubble is finalized, so the chips
@@ -6412,50 +6462,38 @@ async function chatSendStreaming(message, wasCollapsed) {
                 }
               }
             } else {
-              /* Inside the command block — try to live-render a generatePage
-                 or generateHTML command's HTML field as it streams in. */
-              if (!pageStreamStarted &&
+              /* Inside the command block. We deliberately do NOT live-render the
+                 page while it streams — the visitor reads the overview text that
+                 already finalized into a chat bubble above, and the finished page
+                 is rendered ONCE (authoritatively) when the complete command
+                 arrives (see the generatePage handler). We only flag that a page
+                 build is underway so the cut-off / empty-reply safety nets below
+                 behave correctly. No overlay is opened here, so nothing pops up
+                 before the real page is ready. */
+              if (!pageBuildDetected &&
                   /\{"action"\s*:\s*"(generatePage|generateHTML)"/i.test(tokenText)) {
-                /* Open the "Building…" overlay the INSTANT we know this is a
-                   page command — don't wait for the (often long) text preamble
-                   or the "html" field to start streaming. The visitor sees
-                   progress immediately. The HTML extraction below simply no-ops
-                   until the "html" field actually begins arriving. */
-                pageStreamStarted = true;
-                openImmersivePageStreaming();
-                openSidePanel();
-              }
-              if (pageStreamStarted) {
-                const extracted = extractStreamingJsonString(tokenText, 'html');
-                if (extracted && extracted.value) {
-                  /* Only flush up to the latest TOP-LEVEL element boundary —
-                     a position where every opened element has been closed.
-                     Each insertAdjacentHTML call parses fresh in the document
-                     context (it can't continue inside an open <style> from a
-                     previous chunk), so flushing mid-element would dump the
-                     remaining CSS/markup as visible text on the next chunk. */
-                  const safeEnd = extracted.complete
-                    ? extracted.value.length
-                    : findTopLevelHtmlBoundary(extracted.value, pageStreamWritten);
-                  if (safeEnd > pageStreamWritten) {
-                    const delta = extracted.value.substring(pageStreamWritten, safeEnd);
-                    appendImmersivePageStreaming(delta);
-                    pageStreamWritten = safeEnd;
-                  }
-                  /* The whole html field has now streamed in and been flushed
-                     to the iframe. Mark the live render complete so the command
-                     handler knows it can trust the streamed page and skip the
-                     one-shot fallback. */
-                  if (extracted.complete && _immersiveStream) {
-                    _immersiveStream.completed = true;
-                  }
-                }
+                pageBuildDetected = true;
               }
             }
           } else if (event.type === 'text') {
             finalReply = event.content;
           } else if (event.type === 'command') {
-            pendingCommand = event.command;
+            /* Snappy navigation: a plain `navigate` to an existing card is a
+               cheap, non-destructive action. The server can emit it UP FRONT
+               for a clearly-named card, so run it the moment it arrives — the
+               visitor lands on the card while the text reply keeps streaming,
+               instead of waiting for the whole answer to finish. We run it once
+               (earlyNavDone) and clear pendingCommand so the end-of-stream
+               executor doesn't repeat it; a later duplicate navigate is ignored. */
+            if (event.command && event.command.action === 'navigate') {
+              if (!earlyNavDone) {
+                try { executeCommand(event.command); } catch (e) {}
+                earlyNavDone = true;
+                pendingCommand = null;
+              }
+            } else {
+              pendingCommand = event.command;
+            }
           } else if (event.type === 'status') {
             /* Live "what the AI is doing now" label streamed during the silent
                research rounds (tool lookups) before any reply text arrives.
@@ -6480,13 +6518,9 @@ async function chatSendStreaming(message, wasCollapsed) {
             chatShowTyping(false);
             chatSetStatus(null);
             if (streamBubble) streamBubble.remove();
-            /* Tear down the live page render if the AI errored mid-stream
-               so a half-built page doesn't stick around. */
-            if (pageStreamStarted) {
-              closeImmersivePage();
-              resetImmersiveStreamState();
-              pageStreamStarted = false;
-            }
+            /* No live page overlay is shown during streaming anymore, so there's
+               nothing to tear down on error — just clear the build flag. */
+            pageBuildDetected = false;
             /* Cancel any sentence-streaming TTS that was already speaking
                half-formed sentences — the error message will be spoken via
                the standard chatAddMessage hook instead. */
@@ -6566,30 +6600,32 @@ async function chatSendStreaming(message, wasCollapsed) {
       }
     }
 
-    /* Safety net for an interrupted page build: we started rendering an
-       immersive page live during streaming, but never ended up with a
-       complete generatePage/generateHTML command (e.g. the model's output
-       was cut off at the token limit, leaving the command JSON unclosed and
-       unparseable). Without this, the "Building" indicator would spin
-       forever. Finalize the partial page so the indicator clears and let the
-       visitor know it was cut short so they can ask again. */
+    /* If we already opened the named card up front (instant nav), drop a
+       duplicate navigate the model also emitted inline so the visitor isn't
+       re-jumped to the same card after the answer finishes streaming. */
+    if (earlyNavDone && pendingCommand && pendingCommand.action === 'navigate') {
+      pendingCommand = null;
+    }
+
+    /* Safety net for an interrupted page build: a page command began streaming
+       but never ended up as a complete generatePage/generateHTML command (e.g.
+       the model's output was cut off at the token limit, leaving the command
+       JSON unclosed and unparseable). There's no live overlay to clear anymore,
+       so just let the visitor know it was cut short so they can ask again. */
     const _completedPageCmd = pendingCommand &&
       (pendingCommand.action === 'generatePage' || pendingCommand.action === 'generateHTML');
-    if (pageStreamStarted && !_completedPageCmd) {
-      if (isImmersivePageStreaming()) {
-        finalizeImmersivePageStreaming();
-      }
-      pageStreamStarted = false;
+    if (pageBuildDetected && !_completedPageCmd) {
+      pageBuildDetected = false;
       chatAddMessage('agent', "That page got cut off before it finished building. Could you ask me to try again?");
     }
 
     /* Empty-reply safety net: the stream finished but produced no visible
-       text, no command, no availability chips, and no live page build. Without
+       text, no command, no availability chips, and no page build. Without
        this the visitor is left staring at a cleared spinner with no answer
        (e.g. the model spent its whole tool budget without ever synthesizing a
        reply). Surface a friendly retry prompt so a turn never ends in silence.
        Mirrors the early-return pattern used by the 'error' event above. */
-    if (!displayText && !pendingCommand && !pageStreamStarted &&
+    if (!displayText && !pendingCommand && !pageBuildDetected &&
         availabilityResults.length === 0) {
       if (streamBubble) { streamBubble.remove(); streamBubble = null; }
       chatAddMessage('agent', "Sorry — I couldn't put that together just now. Could you try asking again?");
@@ -7748,10 +7784,19 @@ function executeCommand(cmd) {
        and show it to the user while continuing the conversation.
     */
     case 'navigate': {
-      const card = galleryCards.find(c => c.slug === cmd.target);
-      if (!card) {
-        console.warn('Navigate command: card not found for slug:', cmd.target);
-        return;
+      /* Find the requested card by slug. If the AI sent a broad or placeholder
+         target (e.g. "gallery", "first", or a slug that no longer exists),
+         fall back to opening the gallery at the FIRST card instead of doing
+         nothing — a "show me your work" request should always SHOW something.
+         Only bail when there are no gallery cards at all. */
+      let cardIndex = galleryCards.findIndex(c => c.slug === cmd.target);
+      if (cardIndex < 0) {
+        if (!galleryCards.length) {
+          console.warn('Navigate command: no gallery cards to show for target:', cmd.target);
+          return;
+        }
+        console.warn('Navigate command: slug not found, opening gallery at first card:', cmd.target);
+        cardIndex = 0;
       }
 
       /* Close the fullscreen canvas / immersive page if a visual was showing */
@@ -7759,10 +7804,7 @@ function executeCommand(cmd) {
       closeImmersivePage();
 
       /* Navigate the actual gallery to this slide */
-      const cardIndex = galleryCards.findIndex(c => c.slug === cmd.target);
-      if (cardIndex >= 0) {
-        goToSlide(cardIndex);
-      }
+      goToSlide(cardIndex);
 
       /* Make sure the gallery is visible */
       if (document.getElementById('gallery-view') && !document.getElementById('gallery-view').classList.contains('active')) {
@@ -7891,28 +7933,23 @@ function executeCommand(cmd) {
     */
     case 'generatePage':
     case 'generateHTML': {
-      /* The live "assembly" stream (the pulsing "Building" overlay shown while
-         the HTML arrives) is only a PROGRESS affordance — we never rely on it
-         for the final result. Here's why: the AI's standard page template hides
-         every section with `opacity:0` and reveals them with a single
-         DOMContentLoaded-gated IntersectionObserver script. When the page is
-         streamed in chunk-by-chunk via insertAdjacentHTML, those <script>s do
-         NOT execute on insert, and re-running them on "finish" happens AFTER the
-         iframe's DOMContentLoaded has already fired — so the reveal listener
-         never runs and all the sections stay invisible. The visitor is then
-         left staring at a blank / "stuck on Building" page even though the HTML
-         is fully present and saved.
+      /* The page is rendered ONCE here, when the complete command has arrived —
+         we no longer stream a live "Building…" overlay as the HTML arrives (the
+         visitor reads a short overview in a chat bubble while it builds, then
+         sees the finished page). A one-shot render is also REQUIRED for the page
+         to actually work: the AI's standard page template hides every section
+         with `opacity:0` and reveals them via a single DOMContentLoaded-gated
+         IntersectionObserver script. Writing the COMPLETE document into the
+         iframe via srcdoc (openImmersivePage) makes the browser parse it fresh
+         and run every <script> in normal load order (DOMContentLoaded fires
+         correctly), so all content reveals reliably. A chunk-by-chunk
+         insertAdjacentHTML render would never fire those reveal listeners,
+         leaving sections invisible even though the HTML is present.
 
-         So once the complete command has arrived we ALWAYS tear down the live
-         stream and do an authoritative one-shot render of the full HTML:
-         openImmersivePage() writes the COMPLETE document into the iframe via
-         srcdoc, which makes the browser parse it fresh and run every <script>
-         in normal load order (DOMContentLoaded fires correctly), so all
-         content reveals reliably. The only cost is the CSS intro animations
-         replay once — a fair trade for a page that actually shows up. */
+         The isImmersivePageStreaming() guard below is a defensive carry-over:
+         the normal path never opens a live stream anymore, but if any older
+         stream state lingers we drop it before replacing the whole document. */
       if (isImmersivePageStreaming()) {
-        /* Drop the live-stream listener + state; we're replacing the whole
-           iframe document below, so there's no need to flush 'finish'. */
         resetImmersiveStreamState();
       }
       if ((cmd.html || '').trim()) {
@@ -9397,6 +9434,8 @@ function buildImmersivePageDoc(bodyHtml, streamToken) {
           } else if (d.type === 'finish') {
             var pulse = document.querySelector('.__streaming_pulse__');
             if (pulse) pulse.remove();
+            var ov = document.querySelector('.__streaming_overview__');
+            if (ov) ov.remove();
             /* insertAdjacentHTML parses <script> tags into the DOM but
                does NOT execute them. Re-run any inline/external scripts
                the AI included (e.g. IntersectionObserver setups that toggle
@@ -9493,6 +9532,22 @@ function buildImmersivePageDoc(bodyHtml, streamToken) {
       0%, 100% { transform: scale(1); opacity: 1; }
       50% { transform: scale(1.4); opacity: 0.7; }
     }
+    /* Short "what's being built" overview — shown centered near the top while
+       the page streams in so the visitor reads what's coming before it
+       renders. Removed (with the pulse) on finish. */
+    .__streaming_overview__ {
+      position: fixed; top: 1.25rem; left: 50%;
+      transform: translateX(-50%); z-index: 999999;
+      max-width: min(90vw, 540px); text-align: center;
+      padding: 0.85rem 1.4rem;
+      background: rgba(0,0,0,0.6);
+      backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+      border: 1px solid rgba(255,255,255,0.12); border-radius: 14px;
+      font-family: var(--font-sans); font-size: 0.92rem; line-height: 1.5;
+      color: rgba(255,255,255,0.92);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+      animation: __streamFade__ 1.6s ease-in-out infinite;
+    }
   </style>
   ${streamBootstrap}
 </head>
@@ -9542,17 +9597,24 @@ function openImmersivePage(html) {
 
 let _immersiveStream = null;
 
-function openImmersivePageStreaming() {
+function openImmersivePageStreaming(overviewText) {
   const overlay = document.getElementById('immersive-page-overlay');
   const frame = document.getElementById('immersive-page-frame');
   if (!overlay || !frame) return null;
 
   closeFullscreenCanvas();
 
-  /* Body has an empty mount node the bootstrap script appends into,
-     plus a small "Building" indicator that the finish step removes. */
+  /* Body has an empty mount node the bootstrap script appends into, a small
+     "Building" indicator, and (when provided) a short overview of what's
+     being built so the visitor reads what's coming before it renders. Both
+     the pulse and the overview are removed by the finish step. */
+  const _ov = (overviewText || '').trim();
+  const _ovHtml = _ov
+    ? '<div class="__streaming_overview__">' + escapeHtml(_ov) + '</div>'
+    : '';
   const initialBody =
-    '<div class="__streaming_pulse__">Building</div>' +
+    '<div class="__streaming_pulse__">Building your page…</div>' +
+    _ovHtml +
     '<div id="__stream_root__"></div>';
 
   /* The iframe runs sandbox="allow-scripts" without allow-same-origin,
@@ -9600,8 +9662,36 @@ function openImmersivePageStreaming() {
   frame.srcdoc = buildImmersivePageDoc(initialBody, state.token);
   overlay.classList.add('active');
 
+  /* Last-resort watchdog: the parse-success and cut-off paths both tear the
+     stream down (and clear this timer via resetImmersiveStreamState), but if
+     the response NEVER reports completion at all — a hung/dropped connection
+     mid-build — nothing else fires and the "Building" pulse would spin forever.
+     This is an INACTIVITY timer, not an absolute deadline: it is re-armed on
+     every streamed chunk (see appendImmersivePageStreaming), so a legitimately
+     long build that keeps producing output is never interrupted. It only fires
+     after a full stall window with no new content, at which point we close the
+     overlay so the visitor is returned to the site instead of staring at
+     "Building". The saved page (if any) is still reachable from the bottom-left
+     "recent pages" bubble. */
+  _armImmersiveWatchdog(state);
+
   _immersiveStream = state;
   return _immersiveStream;
+}
+
+/* (Re-)arm the inactivity watchdog for a streaming state. Clears any previous
+   timer first, so calling this on each chunk keeps the deadline 60s in the
+   future as long as content keeps flowing. */
+function _armImmersiveWatchdog(state) {
+  if (!state) return;
+  if (state._watchdog) clearTimeout(state._watchdog);
+  state._watchdog = setTimeout(() => {
+    if (_immersiveStream === state && state.isStreaming) {
+      closeImmersivePage();
+      resetImmersiveStreamState();
+      chatAddMessage('agent', "That page took too long to build. Could you ask me to try again?");
+    }
+  }, 60000);
 }
 
 function _flushImmersiveStream() {
@@ -9623,6 +9713,9 @@ function appendImmersivePageStreaming(deltaHtml) {
   if (!_immersiveStream || !deltaHtml) return;
   _immersiveStream.queue.push({ type: 'append', html: deltaHtml });
   _immersiveStream.written += deltaHtml.length;
+  /* Content is still flowing — push the inactivity watchdog deadline forward so
+     a long-but-healthy build is never closed out from under the visitor. */
+  _armImmersiveWatchdog(_immersiveStream);
   _flushImmersiveStream();
 }
 
@@ -9675,6 +9768,9 @@ function resetImmersiveStreamState() {
     }
     if (_immersiveStream._resetTimer) {
       clearTimeout(_immersiveStream._resetTimer);
+    }
+    if (_immersiveStream._watchdog) {
+      clearTimeout(_immersiveStream._watchdog);
     }
   }
   _immersiveStream = null;

@@ -4352,11 +4352,14 @@ body.theme-accent-gradient .section-divider {
   align-items: center;
   gap: 0.625rem;
   padding: 0.5rem 0.625rem 0.5rem 0.75rem;
-  background: rgba(255, 255, 255, 0.1);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(201, 169, 110, 0.25);
-  border-radius: 9999px;
+  /* Look is admin-themeable via CSS vars set by applyChatbotTheme(); each
+     falls back to the original built-in values so an empty theme is a no-op. */
+  background: var(--chatbot-surface-bg, rgba(255, 255, 255, 0.1));
+  color: var(--chatbot-text, #fff);
+  backdrop-filter: blur(var(--chatbot-blur, 16px));
+  -webkit-backdrop-filter: blur(var(--chatbot-blur, 16px));
+  border: 1px solid var(--chatbot-surface-border, rgba(201, 169, 110, 0.25));
+  border-radius: var(--chatbot-radius, 9999px);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
   transition: border-color var(--transition-fast), background var(--transition-fast);
   /* Admin-controllable chat-pill size. --chat-pill-scale is injected by
@@ -4417,13 +4420,13 @@ body.theme-accent-gradient .section-divider {
 .chatbot-agent-name {
   font-size: 0.8125rem;
   font-weight: 600;
-  color: #fff;
+  color: var(--chatbot-text, #fff);
   line-height: 1.2;
 }
 
 .chatbot-agent-role {
   font-size: 0.625rem;
-  color: rgba(255, 255, 255, 0.45);
+  color: color-mix(in srgb, var(--chatbot-text, #fff) 50%, transparent);
   text-transform: uppercase;
   letter-spacing: 0.1em;
   line-height: 1.2;
@@ -4437,7 +4440,7 @@ body.theme-accent-gradient .section-divider {
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 9999px;
-  color: #fff;
+  color: var(--chatbot-text, #fff);
   font-size: 0.8125rem;
   font-family: inherit;
   outline: none;
@@ -4445,7 +4448,7 @@ body.theme-accent-gradient .section-divider {
 }
 
 .chatbot-bar-input::placeholder {
-  color: rgba(255, 255, 255, 0.35);
+  color: color-mix(in srgb, var(--chatbot-text, #fff) 38%, transparent);
 }
 
 .chatbot-bar-input:focus {
@@ -4556,10 +4559,12 @@ body.theme-accent-gradient .section-divider {
   right: 0;
   height: 0;
   max-height: 70vh;
-  background: rgba(255, 255, 255, 0.06);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  /* Themed surface (see applyChatbotTheme) with the original glass as fallback. */
+  background: var(--chatbot-surface-bg, rgba(255, 255, 255, 0.06));
+  color: var(--chatbot-text, #fff);
+  backdrop-filter: blur(var(--chatbot-blur, 24px));
+  -webkit-backdrop-filter: blur(var(--chatbot-blur, 24px));
+  border: 1px solid var(--chatbot-surface-border, rgba(255, 255, 255, 0.1));
   border-radius: 1rem;
   box-shadow: 0 -8px 40px rgba(0, 0, 0, 0.5);
   display: flex;
@@ -4665,6 +4670,9 @@ body.theme-accent-gradient .section-divider {
 .chatbot-messages {
   flex: 1;
   overflow-y: auto;
+  /* Keep wheel/touch scrolling inside the chat — don't let it chain through
+     to whatever is behind (e.g. the gallery card view when chat is open). */
+  overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   padding: 1rem;
   display: flex;
@@ -5101,7 +5109,7 @@ body.theme-accent-gradient .section-divider {
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 9999px;
-  color: #fff;
+  color: var(--chatbot-text, #fff);
   font-size: 0.8125rem;
   font-family: inherit;
   outline: none;
@@ -5109,7 +5117,7 @@ body.theme-accent-gradient .section-divider {
 }
 
 .chatbot-panel-input::placeholder {
-  color: rgba(255, 255, 255, 0.35);
+  color: color-mix(in srgb, var(--chatbot-text, #fff) 38%, transparent);
 }
 
 .chatbot-panel-input:focus {
@@ -6111,6 +6119,9 @@ body.theme-accent-gradient .section-divider {
   font-weight: 300;
   max-height: 200px;
   overflow-y: auto;
+  /* Keep wheel/touch scrolling inside the chat panel — don't let it chain
+     through to the gallery card view sitting behind it. */
+  overscroll-behavior: contain;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
 }
@@ -6221,6 +6232,7 @@ body.theme-accent-gradient .section-divider {
 .side-panel-history .chatbot-messages {
   flex: 1;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0.5rem 1rem;
 }
 
@@ -7742,4 +7754,117 @@ body.side-panel-active .cart-fab {
   .presentation-text-block { bottom: 160px; }
   .presentation-chat { bottom: 64px; }
   .presentation-controls { bottom: 12px; }
+}
+
+/* =============================================================================
+   EMBED WIDGET MODE — served at /embed/concierge inside a cross-origin iframe
+   =============================================================================
+   When the real homepage is loaded in "widget mode" (html.aap-widget, set by an
+   early inline script in index.html keyed on the /embed/concierge path), hide
+   ALL the marketing chrome and make the page background transparent so only the
+   floating AI concierge shows through. The concierge keeps its FULL capability:
+   the expanded chat panel, split view, and generated-page / canvas overlays all
+   still open normally because we only hide the landing / gallery / footer /
+   sphere surfaces, not the concierge's own surfaces. The embed loader resizes
+   the iframe to match (collapsed bar vs. fullscreen) via widget-bridge.js. */
+html.aap-widget,
+html.aap-widget body {
+  background: transparent !important;
+}
+html.aap-widget body {
+  overflow: hidden !important;
+}
+html.aap-widget #loading-screen,
+html.aap-widget #landing-view,
+html.aap-widget #gallery-view,
+html.aap-widget #sphere-view,
+html.aap-widget #site-footer {
+  display: none !important;
+}
+
+/* …BUT when the AI's `navigate` command opens a gallery card (or the 3D sphere)
+   these page-covering views become `.active`. The bridge then reports the iframe
+   as fullscreen (isModal), so we must let the active view actually render —
+   otherwise it stays hidden by the rule above and the fullscreen gallery card
+   never appears in the embed. */
+html.aap-widget #gallery-view.active,
+html.aap-widget #sphere-view.active {
+  display: block !important;
+}
+
+/* The concierge keeps its NATURAL layout in widget mode — the bar stays centered
+   (max-width 540px) and the voice intro / side panel stay bottom-right, exactly
+   like the main site. The loader sizes the iframe to a full-width bottom band
+   that hugs whichever of those surfaces are visible (so the rest of the host page
+   stays clickable), and switches to fullscreen for the modal surfaces (expanded
+   chat panel, split view, generated-page / canvas overlays).
+
+   Those frosted-glass surfaces are designed to float over the site's own dark
+   background. In widget mode the page is transparent (it floats over the host
+   site instead), so we give them that same dark backdrop — derived from the
+   active theme's base color — so they read exactly like on the main site, over
+   ANY host page (light or dark). */
+html.aap-widget #chatbot-bar,
+html.aap-widget #chatbot-panel,
+html.aap-widget #side-chat-panel {
+  /* Honor the admin theme color, but use the near-solid variant: over an
+     arbitrary (often light) host page a translucent surface would wash out, so
+     widget mode always uses ~0.96 opacity. Falls back to the theme base color
+     when no theme is set. */
+  background: var(--chatbot-surface-bg-solid, rgb(var(--color-bg-rgb, 6 11 20) / 0.96)) !important;
+}
+
+/* The chat pill carries a big soft drop-shadow (0 8px 32px) that reads as a
+   grey halo around the pill when it floats over a LIGHT host page (on the dark
+   main site it blends into the background). In widget mode the iframe is
+   transparent, so kill that halo — only the pill itself should be visible, with
+   nothing bleeding into the host page around it. */
+html.aap-widget #chatbot-bar {
+  box-shadow: none !important;
+}
+
+/* The expanded chat panel is capped at 70vh on the main site. Inside the widget
+   iframe, vh = the iframe's OWN height — which the loader derives FROM the panel
+   — so a vh cap creates a feedback deadlock (small band -> small 70vh -> small
+   panel -> small band) and the panel renders clipped. Size it off the HOST
+   viewport height instead: the loader posts it in and widget-bridge.js stores it
+   in --aap-host-vh (px). Fallback to a fixed pixel cap until the host size
+   arrives. The loader caps the iframe at the host height, so the panel never
+   overflows the host viewport. */
+html.aap-widget #chatbot-panel {
+  max-height: calc(var(--aap-host-vh, 640px) * 0.72) !important;
+}
+
+/* SHADE FIX — every floating surface sits on a transparent iframe over an
+   arbitrary host page, and the embed loader CLIPS the iframe tightly to each
+   surface's box (so the host page stays clickable around them). A big soft
+   drop-shadow then (a) reads as a grey halo over a light host and (b) gets hard-
+   cut by that clip into an ugly rectangular "shade". So drop the shadows on the
+   concierge's own floating surfaces in widget mode — only the surfaces
+   themselves should show. (#chatbot-bar is already handled above.) */
+html.aap-widget #chatbot-panel,
+html.aap-widget #side-chat-panel,
+html.aap-widget .voice-intro-card,
+html.aap-widget .page-archive-bubble,
+html.aap-widget .page-archive-bubble-btn,
+html.aap-widget .page-archive-popover {
+  box-shadow: none !important;
+}
+
+/* FLICKER FIX — the loader resizes + re-clips the iframe to hug whichever
+   surfaces are currently open. If those surfaces slide/fade in over several
+   frames (transitions), the clip chases them frame-by-frame and the edges
+   flicker/glitch as the user opens/closes the panel or the saved-pages popover.
+   In widget mode show/hide them INSTANTLY so the iframe resizes and re-clips in
+   a single step — no chasing, no flicker. This only disables layout TRANSITIONS;
+   keyframe animations (e.g. the typing dots) are left intact. The main site is
+   unaffected — these rules are scoped to html.aap-widget. */
+html.aap-widget #chatbot-bar,
+html.aap-widget #chatbot-panel,
+html.aap-widget #side-chat-panel,
+html.aap-widget .voice-intro-card,
+html.aap-widget .page-archive-bubble,
+html.aap-widget .page-archive-bubble-btn,
+html.aap-widget .page-archive-popover {
+  transition: none !important;
 }
