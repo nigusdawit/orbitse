@@ -5807,6 +5807,29 @@ def embed_loader_js():
     return resp
 
 
+@app.route("/embed/concierge", methods=["GET"])
+def embed_concierge():
+    """Serve the REAL public concierge in transparent 'widget mode' for embedding.
+
+    The embeddable widget (embed/loader.js) loads THIS page inside a cross-origin
+    <iframe> on the client's own website. Because it is the actual homepage shell
+    — same script.js / voice.js bundle, same /api/* + /api/voice/* endpoints, same
+    markup — the embedded concierge looks and behaves EXACTLY like the one on the
+    main site, with full capability (chat, voice, generatePage, canvas) and no
+    separate reimplementation to maintain.
+
+    public/index.html adds the `aap-widget aap-collapsed` classes (an early inline
+    <head> script keyed on this path) so styles.css hides the marketing chrome and
+    makes the page transparent, leaving only the floating concierge. Then
+    public/widget-bridge.js talks to the parent loader (via postMessage) to resize
+    the iframe between the collapsed bar and the expanded panels.
+
+    Served under /embed (already exempt from chat-only mode) with NO website
+    feature gate, so the embedded concierge keeps working even when the operator
+    turns the public website OFF."""
+    return _render_app_shell_response()
+
+
 _WIDGET_ALLOWED = {"chat-ui.js", "chat-ui.css", "voice.js"}
 
 
@@ -6023,6 +6046,17 @@ def _enforce_chat_only_mode():
         if path == prefix or path.startswith(prefix if prefix.endswith(".") else prefix + "/"):
             return None
     if path in _CHAT_ONLY_ALLOWED_EXACT:
+        return None
+    # Static assets (css/js/images/fonts) must keep loading so the embedded
+    # concierge served at /embed/concierge can still pull /styles.css, the agent
+    # avatar image, fonts, etc. while the public marketing pages are hidden.
+    # Marketing pages are extensionless (/, /p/<slug>, /<section>), so allowing
+    # dotted asset paths never re-exposes the site itself — only inert assets.
+    _lp = path.lower()
+    if "." in _lp and _lp.rsplit(".", 1)[-1] in (
+        "css", "js", "mjs", "png", "jpg", "jpeg", "gif", "svg", "webp",
+        "ico", "woff", "woff2", "ttf", "otf", "map", "webmanifest",
+    ):
         return None
     # Everything else is a public-site page → show the placeholder instead.
     return _chat_only_placeholder_response()
@@ -8104,7 +8138,7 @@ def _render_app_shell_response(page=None, section_ids=None, initial_section_dom_
         # href="/styles.css"> snapshot — also get the fresh marker. Bump
         # _STYLES_CSS_VERSION whenever public/styles.css ships a visible
         # change that needs to invalidate cached copies.
-        _STYLES_CSS_VERSION = "20260430i"
+        _STYLES_CSS_VERSION = "20260608d"
         html_content = re.sub(
             r'href="/styles\.css(?:\?[^"]*)?"',
             f'href="/styles.css?v={_STYLES_CSS_VERSION}"',

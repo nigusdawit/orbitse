@@ -80,6 +80,21 @@ FONTS:
   <!-- SENTRY_INJECT -->
 
   <!-- Stylesheet -->
+  <!-- EMBED WIDGET MODE — when this page is loaded as the embeddable concierge
+       (served at /embed/concierge inside a cross-origin iframe), flag the root
+       element BEFORE first paint so styles.css hides the marketing chrome and
+       keeps the background transparent (no flash of the full site). No-op on
+       every normal page. widget-bridge.js handles the live resize handshake. -->
+  <script>
+    (function () {
+      try {
+        if (location.pathname.indexOf("/embed/concierge") === 0) {
+          document.documentElement.classList.add("aap-widget");
+        }
+      } catch (e) {}
+    })();
+  </script>
+
   <link rel="stylesheet" href="/styles.css?v=20260429b">
 
   <!-- THEME_VARS_INJECT — replaced server-side with a <style>:root{...}</style>
@@ -1266,6 +1281,10 @@ FONTS:
        endpoints still work for direct debugging access and for backward
        compatibility with admin-saved designs in site_designs that inline
        the original two tags directly. -->
+  <!-- Embed widget-mode bridge: only activates at /embed/concierge (inside the
+       embeddable iframe); resizes the iframe via postMessage. No-op otherwise. -->
+  <script src="/widget-bridge.js" defer></script>
+
   <!-- JS_BUNDLE_INJECT -->
 </body>
 </html>

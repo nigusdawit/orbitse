@@ -7743,3 +7743,59 @@ body.side-panel-active .cart-fab {
   .presentation-chat { bottom: 64px; }
   .presentation-controls { bottom: 12px; }
 }
+
+/* =============================================================================
+   EMBED WIDGET MODE — served at /embed/concierge inside a cross-origin iframe
+   =============================================================================
+   When the real homepage is loaded in "widget mode" (html.aap-widget, set by an
+   early inline script in index.html keyed on the /embed/concierge path), hide
+   ALL the marketing chrome and make the page background transparent so only the
+   floating AI concierge shows through. The concierge keeps its FULL capability:
+   the expanded chat panel, split view, and generated-page / canvas overlays all
+   still open normally because we only hide the landing / gallery / footer /
+   sphere surfaces, not the concierge's own surfaces. The embed loader resizes
+   the iframe to match (collapsed bar vs. fullscreen) via widget-bridge.js. */
+html.aap-widget,
+html.aap-widget body {
+  background: transparent !important;
+}
+html.aap-widget body {
+  overflow: hidden !important;
+}
+html.aap-widget #loading-screen,
+html.aap-widget #landing-view,
+html.aap-widget #gallery-view,
+html.aap-widget #sphere-view,
+html.aap-widget #site-footer {
+  display: none !important;
+}
+
+/* The concierge keeps its NATURAL layout in widget mode — the bar stays centered
+   (max-width 540px) and the voice intro / side panel stay bottom-right, exactly
+   like the main site. The loader sizes the iframe to a full-width bottom band
+   that hugs whichever of those surfaces are visible (so the rest of the host page
+   stays clickable), and switches to fullscreen for the modal surfaces (expanded
+   chat panel, split view, generated-page / canvas overlays).
+
+   Those frosted-glass surfaces are designed to float over the site's own dark
+   background. In widget mode the page is transparent (it floats over the host
+   site instead), so we give them that same dark backdrop — derived from the
+   active theme's base color — so they read exactly like on the main site, over
+   ANY host page (light or dark). */
+html.aap-widget #chatbot-bar,
+html.aap-widget #chatbot-panel,
+html.aap-widget #side-chat-panel {
+  background: rgb(var(--color-bg-rgb, 6 11 20) / 0.96) !important;
+}
+
+/* The expanded chat panel is capped at 70vh on the main site. Inside the widget
+   iframe, vh = the iframe's OWN height — which the loader derives FROM the panel
+   — so a vh cap creates a feedback deadlock (small band -> small 70vh -> small
+   panel -> small band) and the panel renders clipped. Size it off the HOST
+   viewport height instead: the loader posts it in and widget-bridge.js stores it
+   in --aap-host-vh (px). Fallback to a fixed pixel cap until the host size
+   arrives. The loader caps the iframe at the host height, so the panel never
+   overflows the host viewport. */
+html.aap-widget #chatbot-panel {
+  max-height: calc(var(--aap-host-vh, 640px) * 0.72) !important;
+}

@@ -8,10 +8,18 @@
  *           data-api-base="https://YOUR-PLATFORM"
  *           defer></script>
  *
- * It mounts the widget inside a Shadow DOM so the host page's CSS can never
- * collide with (or leak into) the widget. The widget's API calls carry the
- * embed key; the platform validates it + the request Origin against the key's
- * allowlist (see embed_auth.py).
+ * It mounts the REAL concierge (served at /embed/concierge in transparent
+ * "widget mode") inside a cross-origin <iframe>, so the embedded assistant is
+ * byte-for-byte identical to the one on the main site — full capability (chat,
+ * voice, generatePage, canvas) — with no separate reimplementation. The iframe
+ * also gives perfect style isolation: the host page's CSS can never collide with
+ * (or leak into) the widget. The concierge's API calls carry the embed key; the
+ * platform validates it + the request Origin against the key's allowlist.
+ *
+ * The page inside the iframe (widget-bridge.js) reports its collapsed/expanded
+ * state via postMessage, and this loader resizes the iframe to match: a small
+ * box at the bottom when collapsed (so the rest of the host page stays
+ * clickable) and full-screen when the concierge expands.
  *
  * No build step, no dependencies. Idempotent (won't double-mount).
  * ========================================================================== */
@@ -44,20 +52,6 @@
   if (window.__aapEmbedMounted) return;   // idempotent
   window.__aapEmbedMounted = true;
 
-  // The widget's API helpers read these globals.
-  window.__aapApiBase = apiBase;
-  window.__aapEmbedKey = embedKey;
-
-  function loadScript(src) {
-    return new Promise(function (resolve, reject) {
-      var s = document.createElement("script");
-      s.src = src;
-      s.onload = resolve;
-      s.onerror = function () { reject(new Error("failed to load " + src)); };
-      document.head.appendChild(s);
-    });
-  }
-
   // ---- pageview analytics (M15) ----------------------------------------
   // A stable-per-tab session id + per-visitor id (localStorage). Best-effort:
   // any failure is swallowed so tracking never disrupts the host page.
@@ -78,12 +72,15 @@
     if (!apiBase) return;
     var ids = trackingIds();
     var qp = new URLSearchParams(location.search);
+    // Field names must match the /api/track/pageview handler exactly
+    // (page_url / referrer_url / screen_resolution), or it 400s.
     var body = {
-      url: location.href, referrer: document.referrer || "",
+      page_url: location.href, referrer_url: document.referrer || "",
       session_id: ids.sid, visitor_id: ids.vid,
       utm_source: qp.get("utm_source") || "", utm_medium: qp.get("utm_medium") || "",
       utm_campaign: qp.get("utm_campaign") || "",
-      screen: (screen.width || 0) + "x" + (screen.height || 0),
+      utm_term: qp.get("utm_term") || "", utm_content: qp.get("utm_content") || "",
+      screen_resolution: (screen.width || 0) + "x" + (screen.height || 0),
       language: navigator.language || ""
     };
     var headers = { "Content-Type": "application/json" };
@@ -99,9 +96,11 @@
     var started = Date.now();
     window.addEventListener("pagehide", function () {
       try {
+        // Match /api/track/duration: page_url + duration (whole seconds), and
+        // page_url must equal the value sent in pageview so the row matches.
         var payload = JSON.stringify({
-          session_id: ids.sid, path: location.pathname,
-          duration_ms: Date.now() - started, embed_key: embedKey
+          session_id: ids.sid, page_url: location.href,
+          duration: Math.round((Date.now() - started) / 1000), embed_key: embedKey
         });
         navigator.sendBeacon(apiBase + "/api/track/duration",
           new Blob([payload], { type: "application/json" }));
@@ -110,32 +109,112 @@
   }
 
   function mount() {
-    // Style-isolated host: a fixed-position div with a shadow root.
-    var host = document.createElement("div");
-    host.id = "aap-embed-host";
-    host.style.cssText = "position:fixed;z-index:2147482000;right:0;bottom:0;width:0;height:0;";
-    document.body.appendChild(host);
-    var shadow = host.attachShadow ? host.attachShadow({ mode: "open" }) : host;
+    var FRAME_ID = "aap-concierge-frame";
+    if (document.getElementById(FRAME_ID)) return;
 
-    // Inject the widget stylesheet INTO the shadow root (scoped, no host bleed).
-    var link = document.createElement("link");
-    link.rel = "stylesheet";
-    link.href = apiBase + "/widget/chat-ui.css" + verQS;
-    shadow.appendChild(link);
+    // Idle defaults: a full-width band pinned to the bottom of the host viewport.
+    // It spans the full width so the concierge's floating UI lands where it does
+    // on the main site (bar bottom-center, voice intro / side panel bottom-right),
+    // but it is only as TALL as the visible UI needs — so the rest of the host
+    // page above the band stays clickable. The in-iframe bridge (widget-bridge.js)
+    // reports the precise band height, and the modal "expanded" state.
+    var COLLAPSED_H = 120;
 
-    // Mount point inside the shadow root.
-    var mountEl = document.createElement("div");
-    shadow.appendChild(mountEl);
+    var iframe = document.createElement("iframe");
+    iframe.id = FRAME_ID;
+    iframe.title = "AI Concierge";
+    // Voice input + spoken replies + copy-to-clipboard need these capabilities.
+    iframe.allow = "microphone; autoplay; clipboard-write";
+    iframe.setAttribute("allowtransparency", "true");
 
-    // voice.js (optional) then chat-ui.js define window.VoiceAgent / ChatUI.
-    loadScript(apiBase + "/widget/voice.js" + verQS).catch(function () {})
-      .then(function () { return loadScript(apiBase + "/widget/chat-ui.js" + verQS); })
-      .then(function () {
-        if (window.ChatUI && typeof window.ChatUI.init === "function") {
-          window.ChatUI.init({ apiBase: apiBase, embedKey: embedKey, mount: mountEl });
+    // Load the REAL concierge in transparent widget mode. verQS busts caches so
+    // an updated build reaches embedded sites immediately; the embed key lets the
+    // platform scope/validate the session (single-tenant ignores it harmlessly).
+    var src = apiBase + "/embed/concierge" + verQS;
+    if (embedKey) src += (verQS ? "&" : "?") + "embed_key=" + encodeURIComponent(embedKey);
+    iframe.src = src;
+
+    iframe.style.cssText = [
+      "position:fixed",
+      "bottom:0",
+      "left:0",
+      "width:100%",
+      "height:" + COLLAPSED_H + "px",
+      "max-width:100vw",
+      "max-height:100vh",
+      "border:0",
+      "margin:0",
+      "padding:0",
+      "background:transparent",
+      "color-scheme:normal",
+      "z-index:2147482000",
+      "transition:height .18s ease"
+    ].join(";");
+    document.body.appendChild(iframe);
+
+    var expanded = false;
+
+    // Tell the in-iframe bridge the HOST viewport height. The concierge's
+    // expanded chat panel is capped at 70vh; inside the iframe vh is just the
+    // band height we derive FROM the panel, so a vh cap deadlocks and clips the
+    // panel. The bridge stores this host height in a CSS var the panel sizes off
+    // instead. Best-effort and idempotent — safe to call repeatedly.
+    function sendHostSize() {
+      try {
+        if (iframe.contentWindow) {
+          // Scope the message to the concierge's own origin (defense in depth)
+          // so no other frame can read it; fall back to "*" only if unknown.
+          iframe.contentWindow.postMessage(
+            { __aap: "aap-host", type: "hostsize", vh: window.innerHeight || 0 },
+            apiBase || "*"
+          );
         }
-      })
-      .catch(function (e) { console.warn("[aap-embed] widget load failed", e); });
+      } catch (e) {}
+    }
+
+    // Push the host size once the iframe document is live, with a few retries in
+    // case the bridge's message listener isn't attached on the very first post.
+    iframe.addEventListener("load", function () {
+      sendHostSize();
+      [200, 800, 2000].forEach(function (t) { setTimeout(sendHostSize, t); });
+    });
+
+    function setCollapsed(h) {
+      expanded = false;
+      iframe.style.top = "auto";
+      iframe.style.bottom = "0";
+      iframe.style.left = "0";
+      iframe.style.transform = "none";
+      iframe.style.width = "100%";
+      iframe.style.height = Math.min(h || COLLAPSED_H, window.innerHeight || 800) + "px";
+    }
+
+    function setExpanded() {
+      expanded = true;
+      iframe.style.top = "0";
+      iframe.style.bottom = "0";
+      iframe.style.left = "0";
+      iframe.style.transform = "none";
+      iframe.style.width = "100vw";
+      iframe.style.height = "100vh";
+    }
+
+    // Listen for the in-iframe bridge's resize messages.
+    window.addEventListener("message", function (ev) {
+      var d = ev && ev.data;
+      if (!d || d.__aap !== "aap-widget") return;
+      // Only accept messages from our own iframe's window.
+      if (iframe.contentWindow && ev.source !== iframe.contentWindow) return;
+      if (d.type !== "state") return;
+      if (d.state === "expanded") setExpanded();
+      else if (d.state === "collapsed") setCollapsed(d.h);
+    });
+
+    // Keep the collapsed box sized to the viewport on host-window resizes.
+    window.addEventListener("resize", function () {
+      sendHostSize();
+      if (!expanded) setCollapsed(parseInt(iframe.style.height, 10) || COLLAPSED_H);
+    }, { passive: true });
   }
 
   if (document.readyState === "loading") {
