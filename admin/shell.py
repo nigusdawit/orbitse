@@ -18,6 +18,7 @@ tenant's count, so no tenant filter is needed for these aggregates.
 Imports come from core (never app — that would be circular). Registered in app.py via
 app.register_blueprint(shell_bp), right after crm_bp.
 """
+import os
 import time
 from datetime import datetime, timezone
 
@@ -331,6 +332,45 @@ def admin_overview_attention():
         pass
 
     return jsonify({"ok": True, "items": items})
+
+
+@shell_bp.route("/admin/api/integrations", methods=["GET"])
+@admin_required
+def admin_integrations():
+    """Integrations hub (task 098, gap §6.1): one status grid aggregating each
+    integration's configured/missing state from the loaded env (env_manager writes
+    secrets into os.environ at boot) + the mcp_servers table. Super-admin only
+    (reveals which secrets are set); MCP count is its own fail-open try/except."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+
+    def _set(*names):
+        return any((os.environ.get(n) or "").strip() for n in names)
+
+    specs = [
+        ("anthropic", "Anthropic (Claude)", "AI", _set("ANTHROPIC_API_KEY"), "ANTHROPIC_API_KEY"),
+        ("openai", "OpenAI", "AI", _set("OPENAI_API_KEY", "AI_INTEGRATIONS_OPENAI_API_KEY"), "OPENAI_API_KEY"),
+        ("stripe", "Stripe (payments)", "Commerce",
+         _set("STRIPE_SECRET_KEY", "STRIPE_TEST_SECRET_KEY"), "STRIPE_SECRET_KEY"),
+        ("twilio", "Twilio (SMS / voice)", "Messaging",
+         _set("TWILIO_ACCOUNT_SID") and _set("TWILIO_AUTH_TOKEN"), "TWILIO_ACCOUNT_SID + AUTH_TOKEN"),
+        ("resend", "Resend (email)", "Messaging", _set("RESEND_API_KEY"), "RESEND_API_KEY"),
+    ]
+    items = [{"key": k, "label": lbl, "category": cat, "configured": bool(ok), "hint": hint}
+             for (k, lbl, cat, ok, hint) in specs]
+    # MCP connectors — count enabled servers (its own try/except → fail-open).
+    try:
+        n = int((query_db("SELECT COUNT(*) AS n FROM mcp_servers WHERE enabled = TRUE",
+                           fetchone=True) or {}).get("n") or 0)
+        items.append({"key": "mcp", "label": "MCP connectors", "category": "AI",
+                      "configured": n > 0, "hint": ("%d connected" % n) if n else "none connected"})
+    except Exception:
+        items.append({"key": "mcp", "label": "MCP connectors", "category": "AI",
+                      "configured": False, "hint": ""})
+    return jsonify({"integrations": items,
+                    "configured": sum(1 for i in items if i["configured"]),
+                    "total": len(items)})
 
 
 # Content tables whose edits read as "page/content changes" (not raw config churn).

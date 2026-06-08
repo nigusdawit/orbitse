@@ -1,0 +1,25 @@
+{# admin/tabs/_integrations.html — Integrations hub (task 098, gap §6.1). One status
+   grid (connected ✓ / missing ✗) aggregating env + MCP signals via the super-admin
+   /admin/api/integrations endpoint. Scoped CSS so nothing leaks to other tabs. #}
+<div id="tab-integrations" class="tab-content">
+    <div class="gx-head">
+      <div>
+        <h2 class="gx-title">Integrations</h2>
+        <p class="gx-sub">Connection status for the services this concierge can use. Add or change keys in the Secrets tab.</p>
+      </div>
+      <button class="btn-secondary" onclick="loadIntegrations()" data-testid="integrations-refresh">Refresh</button>
+    </div>
+    <div id="integrations-grid" class="gxh-grid"><p class="empty-state">Loading…</p></div>
+
+    <style>
+      #tab-integrations .gxh-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:14px; margin-top:1rem; }
+      #tab-integrations .gxh-card{ border:1px solid var(--admin-border); border-radius:12px; padding:14px; background:var(--admin-surface); }
+      #tab-integrations .gxh-top{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
+      #tab-integrations .gxh-name{ font-weight:700; font-size:.92rem; }
+      #tab-integrations .gxh-cat{ font-size:.66rem; text-transform:uppercase; letter-spacing:.06em; color:var(--admin-text-muted); margin-top:2px; }
+      #tab-integrations .gxh-pill{ font-size:.7rem; font-weight:700; padding:.15rem .55rem; border-radius:999px; white-space:nowrap; }
+      #tab-integrations .gxh-on{ background:color-mix(in srgb,var(--admin-success,#22c55e) 18%,transparent); color:var(--admin-success,#16a34a); }
+      #tab-integrations .gxh-off{ background:color-mix(in srgb,#ef4444 16%,transparent); color:#ef4444; }
+      #tab-integrations .gxh-hint{ font-size:.74rem; color:var(--admin-text-muted); margin-top:10px; word-break:break-word; font-family:ui-monospace,monospace; }
+    </style>
+  </div>

@@ -146,6 +146,7 @@ GET /admin/api/forms/<int:form_id>/submissions
 GET /admin/api/gallery-cards
 GET /admin/api/generated-pages
 GET /admin/api/generated-pages/<int:page_id>
+GET /admin/api/integrations
 GET /admin/api/kb/chunk/<int:chunk_id>
 GET /admin/api/kb/list
 GET /admin/api/leads

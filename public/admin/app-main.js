@@ -7833,6 +7833,30 @@
       } catch (e) { _crmToast('Could not convert', false); }
     }
 
+    // ---- Integrations hub (task 098, gap §6.1) --------------------------
+    // One status grid (connected/missing) over /admin/api/integrations. Labels +
+    // categories + hints are server-fixed strings (esc-safe in text context); the
+    // data-testid key is a fixed enum.
+    async function loadIntegrations() {
+      const el = document.getElementById('integrations-grid');
+      if (!el) return;
+      try {
+        const res = await fetch('/admin/api/integrations');
+        if (!res.ok) { el.innerHTML = '<p class="empty-state">Super admin only.</p>'; return; }
+        const d = await res.json();
+        const items = (d && d.integrations) || [];
+        if (!items.length) { el.innerHTML = '<p class="empty-state">No integrations.</p>'; return; }
+        el.innerHTML = items.map(i => {
+          const on = !!i.configured;
+          return '<div class="gxh-card" data-testid="integration-' + esc(i.key) + '">'
+            + '<div class="gxh-top"><div><div class="gxh-name">' + esc(i.label) + '</div>'
+            + '<div class="gxh-cat">' + esc(i.category || '') + '</div></div>'
+            + '<span class="gxh-pill ' + (on ? 'gxh-on">✓ Connected' : 'gxh-off">✗ Missing') + '</span></div>'
+            + '<div class="gxh-hint">' + esc(i.hint || '') + '</div></div>';
+        }).join('');
+      } catch (e) { el.innerHTML = '<p class="empty-state">Failed to load.</p>'; }
+    }
+
     // --- row actions -----------------------------------------------------
     async function crmSetStatus(which, id, sel) {
       const cfg = CRM_LISTS[which];
