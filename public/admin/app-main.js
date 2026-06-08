@@ -7436,7 +7436,7 @@
       },
     };
     const CRM_ORDER = ['leads','callbacks','meetings','voice','profiles'];
-    let _crmActive = 'leads';            // which pane is currently visible
+    let _crmActive = 'contacts';         // which pane is currently visible (task 097: Contacts default)
     let _crmPollTimer = null;            // live auto-refresh handle
 
     function _crmToast(msg, ok) {
@@ -7460,10 +7460,11 @@
       _crmActive = which;
       document.querySelectorAll('#crm-subnav .crm-sub').forEach(b => b.classList.remove('active'));
       if (btn) btn.classList.add('active');
-      CRM_ORDER.forEach(k => {
+      ['contacts'].concat(CRM_ORDER).forEach(k => {
         const el = document.getElementById('crm-' + k);
         if (el) el.style.display = (k === which) ? 'block' : 'none';
       });
+      if (which === 'contacts') loadContacts();   // refresh the people view on show
       // Viewing a list clears its "new" badge.
       const el = document.getElementById('crm-' + which);
       if (el && el._rows) _crmMarkSeen(which, el._rows);
@@ -7531,6 +7532,7 @@
     }
 
     function loadCrm() {
+      loadContacts();
       CRM_ORDER.forEach(_crmLoad);
       crmLoadCaptureSettings();
       crmStartPolling();
@@ -7543,8 +7545,110 @@
       _crmPollTimer = setInterval(() => {
         const tab = document.getElementById('tab-crm');
         if (!tab || !tab.classList.contains('active') || document.hidden) return;
+        loadContacts();
         CRM_ORDER.forEach(_crmLoad);
       }, 25000);
+    }
+
+    // ---- Contacts: unified scored people view (task 097, gap §2.1/2.2/2.3/2.8) ----
+    // Merges leads (with their visitor_profiles lead_score) + profile-only people,
+    // with KPI tiles + segment chips + a Convert→customer action. Filtering/sort is
+    // client-side over the bounded list. All values escaped via _esc6 (XSS-safe).
+    let _contactsRows = [];
+    let _contactsStats = {};
+    let _contactsSeg = 'all';          // all | hot | warm | new | customers
+    let _contactsSort = 'score';       // score | recent
+
+    async function loadContacts() {
+      const el = document.getElementById('crm-contacts');
+      if (!el) return;
+      try {
+        const res = await fetch('/admin/api/contacts');
+        if (!res.ok) { el.innerHTML = '<p class="empty-state">Super admin only.</p>'; return; }
+        const data = await res.json();
+        _contactsRows = (data && data.contacts) || [];
+        _contactsStats = (data && data.stats) || {};
+        _contactsRender();
+      } catch (e) { el.innerHTML = '<p class="empty-state">Failed to load.</p>'; }
+    }
+
+    function _contactsSegMatch(c, seg) {
+      const s = c.lead_score || 0;
+      if (seg === 'hot') return s >= 80;
+      if (seg === 'warm') return s >= 50 && s < 80;
+      if (seg === 'new') return s < 50 && c.status !== 'won';
+      if (seg === 'customers') return c.status === 'won';
+      return true;   // all
+    }
+    function contactsSetSeg(seg) { _contactsSeg = seg; _contactsRender(); }
+    function contactsSetSort(s) { _contactsSort = s; _contactsRender(); }
+
+    function _contactsRender() {
+      const el = document.getElementById('crm-contacts');
+      if (!el) return;
+      const st = _contactsStats || {};
+      const kpi = (label, val) => '<div class="gx-stat"><div class="gx-stat-label">' + label
+        + '</div><div class="gx-stat-value">' + _esc6(String(val)) + '</div></div>';
+      let html = '<div class="gx-stats" style="margin-bottom:12px;">'
+        + kpi('Open leads', st.open || 0) + kpi('Hot (≥80)', st.hot || 0)
+        + kpi('Avg age (days)', st.avg_age_days || 0) + kpi('Won this month', st.won_this_month || 0)
+        + '</div>';
+      const segs = [['all', 'All'], ['hot', 'Hot'], ['warm', 'Warm'], ['new', 'New'], ['customers', 'Customers']];
+      html += '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">';
+      segs.forEach(seg => {
+        const n = _contactsRows.filter(c => _contactsSegMatch(c, seg[0])).length;
+        const on = (_contactsSeg === seg[0]);
+        html += '<button class="btn-secondary" onclick="contactsSetSeg(\'' + seg[0] + '\')" data-testid="contacts-seg-' + seg[0] + '" '
+          + 'style="padding:4px 10px;font-size:12px;' + (on ? 'background:var(--admin-accent);color:#fff;' : '') + '">'
+          + seg[1] + ' (' + n + ')</button>';
+      });
+      html += '<span style="flex:1;"></span><select onchange="contactsSetSort(this.value)" style="font-size:12px;padding:4px;border-radius:6px;">'
+        + '<option value="score"' + (_contactsSort === 'score' ? ' selected' : '') + '>Sort: Lead score</option>'
+        + '<option value="recent"' + (_contactsSort === 'recent' ? ' selected' : '') + '>Sort: Last activity</option></select></div>';
+      let rows = _contactsRows.filter(c => _contactsSegMatch(c, _contactsSeg));
+      rows = rows.slice().sort(_contactsSort === 'recent'
+        ? (a, b) => String(b.last_activity || '').localeCompare(String(a.last_activity || ''))
+        : (a, b) => (b.lead_score || 0) - (a.lead_score || 0));
+      if (!rows.length) { el.innerHTML = html + '<p class="empty-state">No contacts in this segment.</p>'; return; }
+      html += '<table style="width:100%;border-collapse:collapse;font-size:13px;"><thead><tr style="text-align:left;opacity:.7;">'
+        + '<th style="padding:6px;">Contact</th><th style="padding:6px;">Interest</th><th style="padding:6px;">Source</th>'
+        + '<th style="padding:6px;">Lead score</th><th style="padding:6px;">Last activity</th><th style="padding:6px;">Status</th>'
+        + '<th style="padding:6px;">Actions</th></tr></thead><tbody>';
+      rows.forEach(c => {
+        const vidShort = c.visitor_id ? c.visitor_id.replace('cv_', '').replace('cs_', '').slice(0, 12) : '';
+        const who = c.name || c.email || vidShort || '—';
+        const sub = (c.email && c.email !== who) ? '<br><span style="opacity:.6;font-size:11px;">' + _esc6(c.email) + '</span>' : '';
+        const la = c.last_activity ? new Date(c.last_activity).toLocaleString() : '';
+        const isCustomer = (c.status === 'won');
+        const conv = isCustomer
+          ? '<span style="opacity:.6;font-size:12px;">✓ Customer</span>'
+          : '<button class="btn-secondary" style="padding:3px 8px;font-size:12px;" onclick="contactConvert(' + (c.lead_id || 'null') + ',\'' + _esc6(c.visitor_id || '') + '\')">Convert</button>';
+        html += '<tr style="border-top:1px solid rgba(255,255,255,.06);">'
+          + '<td style="padding:6px;" title="' + _esc6(c.visitor_id || '') + '">' + _esc6(who) + sub + '</td>'
+          + '<td style="padding:6px;">' + _esc6(c.interest || '') + '</td>'
+          + '<td style="padding:6px;">' + _esc6(c.source || '') + '</td>'
+          + '<td style="padding:6px;"><strong>' + (c.lead_score || 0) + '</strong></td>'
+          + '<td style="padding:6px;">' + _esc6(la) + '</td>'
+          + '<td style="padding:6px;"><span class="badge">' + _esc6(c.status || '') + '</span></td>'
+          + '<td style="padding:6px;white-space:nowrap;">' + conv + '</td></tr>';
+      });
+      el.innerHTML = html + '</tbody></table>';
+    }
+
+    async function contactConvert(leadId, visitorId) {
+      const body = {};
+      if (leadId) body.lead_id = leadId;
+      else if (visitorId) body.visitor_id = visitorId;
+      else return;
+      try {
+        const res = await adminFetch('/admin/api/contacts/convert', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) throw new Error('convert failed');
+        _crmToast('Converted to customer');
+        loadContacts();
+      } catch (e) { _crmToast('Could not convert', false); }
     }
 
     // --- row actions -----------------------------------------------------
