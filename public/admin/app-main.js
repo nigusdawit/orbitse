@@ -2627,6 +2627,33 @@
       }, 6000);
     }
 
+    // --- Inbox layout toggles --------------------------------------------
+    // Give the operator room for the transcript: hide the summary tiles, collapse
+    // the conversation list (left), or collapse the visitor details (right). Each
+    // toggle just flips a class — the CSS handles the column resize/animation — and
+    // updates the button label/state so it's clear what's hidden.
+    function inboxToggleStats() {
+      const stats = document.getElementById('chat-stats');
+      const btn = document.getElementById('inbox-toggle-stats');
+      if (!stats) return;
+      const hidden = stats.classList.toggle('gxi-stats-hidden');
+      if (btn) { btn.textContent = hidden ? 'Show stats' : 'Hide stats'; btn.setAttribute('aria-pressed', String(hidden)); }
+    }
+    function inboxToggleThreads() {
+      const box = document.querySelector('#tab-chat-history .gxi-inbox');
+      if (!box) return;
+      const collapsed = box.classList.toggle('gxi-no-threads');
+      const btn = document.getElementById('inbox-toggle-threads');
+      if (btn) btn.setAttribute('aria-pressed', String(collapsed));
+    }
+    function inboxToggleContext() {
+      const box = document.querySelector('#tab-chat-history .gxi-inbox');
+      if (!box) return;
+      const collapsed = box.classList.toggle('gxi-no-context');
+      const btn = document.getElementById('inbox-toggle-context');
+      if (btn) btn.setAttribute('aria-pressed', String(collapsed));
+    }
+
 
     /*
     ========================================================================

@@ -10,11 +10,13 @@
         <p class="gx-sub">Live inbox — transcripts, visitor context, and human takeover.</p>
       </div>
       <div style="display:flex; gap:0.5rem; align-items:center;">
+        <button class="btn-secondary gxi-toggle-btn" id="inbox-toggle-stats" type="button" aria-pressed="false" onclick="inboxToggleStats()" title="Show or hide the summary tiles">Hide stats</button>
         <button class="btn-secondary" onclick="loadChatHistory()" data-testid="button-chat-refresh">Refresh</button>
       </div>
     </div>
 
-    <div id="chat-stats" class="gx-stats">
+    <!-- Compact summary tiles — collapsible so the transcript can take the room. -->
+    <div id="chat-stats" class="gx-stats gxi-stats-compact">
       <div class="gx-stat"><div class="gx-stat-label">Total Conversations</div>
         <div class="gx-stat-value" id="stat-total-conversations">0</div></div>
       <div class="gx-stat"><div class="gx-stat-label">Messages Today</div>
@@ -26,14 +28,18 @@
     </div>
 
     <div class="gxi-inbox">
-      <!-- Pane 1: thread list -->
+      <!-- Pane 1: thread list (collapsible) -->
       <div class="gxi-threads" id="inbox-thread-list" data-testid="inbox-thread-list">
         <div class="empty-state" style="padding:1rem;">Loading…</div>
       </div>
 
       <!-- Pane 2: transcript + human-takeover composer (composer wired in P2) -->
       <div class="gxi-transcript-pane">
-        <div class="gxi-transcript-head" id="inbox-transcript-head"></div>
+        <div class="gxi-transcript-head">
+          <button class="gxi-rail-btn" id="inbox-toggle-threads" type="button" aria-pressed="false" onclick="inboxToggleThreads()" title="Show or hide the conversation list" aria-label="Toggle conversation list">☰</button>
+          <span class="gxi-transcript-title" id="inbox-transcript-head"></span>
+          <button class="gxi-rail-btn gxi-rail-btn-right" id="inbox-toggle-context" type="button" aria-pressed="false" onclick="inboxToggleContext()" title="Show or hide visitor details" aria-label="Toggle visitor details">ⓘ</button>
+        </div>
         <div class="gxi-msgs" id="inbox-transcript" data-testid="inbox-transcript">
           <div class="empty-state gxi-placeholder">Select a conversation to view its transcript.</div>
         </div>
@@ -54,10 +60,29 @@
 
     <style>
       /* 095 §2.4 inbox — scoped to #tab-chat-history so nothing leaks to other tabs. */
-      #tab-chat-history .gxi-inbox{ display:grid; grid-template-columns:280px 1fr 320px;
+
+      /* Compact summary tiles: smaller + denser than the default .gx-stats so the
+         transcript gets the vertical room. Collapsible via .gxi-stats-hidden. */
+      #tab-chat-history .gxi-stats-compact{ grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+        gap:.6rem; margin-bottom:.6rem; }
+      #tab-chat-history .gxi-stats-compact .gx-stat{ padding:.5rem .75rem; box-shadow:none; }
+      #tab-chat-history .gxi-stats-compact .gx-stat-value{ font-size:1.15rem; margin-top:.1rem; }
+      #tab-chat-history .gxi-stats-compact .gx-stat-label{ font-size:.62rem; }
+      #tab-chat-history .gxi-stats-compact.gxi-stats-hidden{ display:none; }
+
+      /* The inbox uses CSS variables for the side column widths so the list (left)
+         and the visitor details (right) can each collapse independently while the
+         transcript flexes to fill the freed space. */
+      #tab-chat-history .gxi-inbox{ --col-threads:280px; --col-context:320px;
+        display:grid; grid-template-columns:var(--col-threads) 1fr var(--col-context);
         grid-template-rows:minmax(0, 1fr); gap:0;
-        border:1px solid var(--admin-border); border-radius:14px; overflow:hidden; margin-top:1rem;
-        height:min(620px, calc(100vh - 320px)); background:var(--admin-surface); }
+        border:1px solid var(--admin-border); border-radius:14px; overflow:hidden; margin-top:.4rem;
+        height:clamp(440px, calc(100vh - 230px), 920px); background:var(--admin-surface);
+        transition:grid-template-columns .18s ease; }
+      #tab-chat-history .gxi-inbox.gxi-no-threads{ --col-threads:0px; }
+      #tab-chat-history .gxi-inbox.gxi-no-threads .gxi-threads{ display:none; }
+      #tab-chat-history .gxi-inbox.gxi-no-context{ --col-context:0px; }
+      #tab-chat-history .gxi-inbox.gxi-no-context .gxi-context{ display:none; }
       #tab-chat-history .gxi-threads{ border-right:1px solid var(--admin-border); overflow-y:auto; min-height:0; }
       #tab-chat-history .gxi-thread{ display:block; width:100%; text-align:left; border:0; background:none;
         font:inherit; cursor:pointer; padding:.6rem .75rem; border-bottom:1px solid var(--admin-border);
@@ -73,8 +98,18 @@
       #tab-chat-history .gxi-chip{ font-size:.6rem; font-weight:700; text-transform:uppercase; letter-spacing:.04em;
         padding:0 .35em; border-radius:999px; background:var(--admin-warning,#f59e0b); color:#000; }
       #tab-chat-history .gxi-transcript-pane{ display:flex; flex-direction:column; min-width:0; min-height:0; }
-      #tab-chat-history .gxi-transcript-head{ padding:.5rem .75rem; border-bottom:1px solid var(--admin-border);
+      #tab-chat-history .gxi-transcript-head{ display:flex; align-items:center; gap:.5rem;
+        padding:.4rem .6rem; border-bottom:1px solid var(--admin-border);
         font-size:.8rem; color:var(--admin-text-muted); min-height:1.2rem; }
+      #tab-chat-history .gxi-transcript-title{ flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      /* Small icon buttons that collapse the side panes (☰ list, ⓘ details). */
+      #tab-chat-history .gxi-rail-btn{ flex:none; width:30px; height:30px; border-radius:8px; cursor:pointer;
+        border:1px solid var(--admin-border); background:var(--admin-surface); color:var(--admin-text);
+        font-size:.95rem; line-height:1; display:inline-flex; align-items:center; justify-content:center; }
+      #tab-chat-history .gxi-rail-btn:hover{ background:var(--admin-surface-hover); }
+      #tab-chat-history .gxi-inbox.gxi-no-threads .gxi-rail-btn[id="inbox-toggle-threads"],
+      #tab-chat-history .gxi-inbox.gxi-no-context .gxi-rail-btn[id="inbox-toggle-context"]{
+        background:color-mix(in srgb,var(--admin-accent) 16%,transparent); border-color:var(--admin-accent); }
       #tab-chat-history .gxi-msgs{ flex:1 1 auto; min-height:0; overflow-y:auto; padding:.75rem; }
       #tab-chat-history .gxi-msg{ margin-bottom:.6rem; }
       #tab-chat-history .gxi-msg-role{ font-size:.62rem; text-transform:uppercase; letter-spacing:.05em;
