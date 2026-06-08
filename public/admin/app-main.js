@@ -1961,6 +1961,7 @@
         document.getElementById('chatbot-agent-role').value = settings.agent_role || '';
         document.getElementById('chatbot-agent-avatar').value = settings.agent_avatar || '';
         document.getElementById('chatbot-greeting').value = settings.greeting || '';
+        { const _ao = document.getElementById('chatbot-auto-open'); if (_ao) _ao.value = settings.auto_open_seconds || 0; }   /* task 101 §3.2 */
         document.getElementById('chatbot-api-endpoint').value = settings.api_endpoint || '/api/chat';
         document.getElementById('chatbot-embed-code').value = settings.embed_code || '';
         /* Prompt editor only renders for super-admin; for clients the element
@@ -2073,6 +2074,7 @@
         agent_role: document.getElementById('chatbot-agent-role').value,
         agent_avatar: document.getElementById('chatbot-agent-avatar').value,
         greeting: document.getElementById('chatbot-greeting').value,
+        auto_open_seconds: parseInt((document.getElementById('chatbot-auto-open') || {}).value, 10) || 0,   /* task 101 §3.2 */
         quick_prompts: quickPrompts,
         api_endpoint: document.getElementById('chatbot-api-endpoint').value,
         embed_code: document.getElementById('chatbot-embed-code').value,

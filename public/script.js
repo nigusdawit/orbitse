@@ -5817,6 +5817,18 @@ async function initChatbot() {
       return;
     }
 
+    /* task 101 §3.2 — proactive greeting: auto-open the built-in panel after N
+       seconds (0 = off). ensureChatExpanded only opens if still collapsed, so it
+       won't fight a visitor who already opened it. Embed mode handles its own UI. */
+    try {
+      var _autoOpen = parseInt(chatSettings.auto_open_seconds, 10) || 0;
+      if (_autoOpen > 0 && chatSettings.mode !== 'embed') {
+        setTimeout(function () {
+          try { if (typeof ensureChatExpanded === 'function') ensureChatExpanded(); } catch (_e) {}
+        }, _autoOpen * 1000);
+      }
+    } catch (_e) { /* never block init on this */ }
+
     /* MODE: EMBED — Inject external chatbot widget */
     if (chatSettings.mode === 'embed' && chatSettings.embed_code) {
       const embedContainer = document.getElementById('chatbot-embed-container');

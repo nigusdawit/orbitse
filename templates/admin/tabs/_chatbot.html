@@ -61,6 +61,14 @@
             <textarea id="chatbot-greeting" rows="2" placeholder="Welcome! How can I help you today?" data-testid="input-chatbot-greeting"></textarea>
           </div>
         </div>
+        {# task 101 §3.2 — proactive greeting: auto-open the panel after N seconds #}
+        <div class="form-row">
+          <div class="form-group" style="grid-column: 1 / -1;">
+            <label for="chatbot-auto-open">Auto-open after (seconds) — proactive greeting (0 = off)</label>
+            <input type="number" id="chatbot-auto-open" min="0" max="600" step="1" value="0" placeholder="0" data-testid="input-chatbot-auto-open" style="max-width:160px;">
+            <p style="opacity:.7; font-size:12px; margin:4px 0 0;">Opens the built-in chat panel this many seconds after the page loads. 0 = stays closed until the visitor clicks.</p>
+          </div>
+        </div>
         <div class="form-row">
           <div class="form-group" style="grid-column: 1 / -1;">
             <label for="chatbot-quick-prompts">Quick Prompts (one per line — shown as clickable chips)</label>

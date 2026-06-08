@@ -266,6 +266,11 @@ class PylegoConfig:
     crm_hot_min: int
     crm_warm_min: int
 
+    # escalation_enabled (task 101 §3.5): when ON, the visitor concierge proactively
+    # offers a human handoff / callback when it's stuck or the visitor is frustrated.
+    # Inert-OFF under the master kill-switch (behavior toggle).
+    escalation_enabled: bool
+
     @property
     def langfuse_active(self) -> bool:
         """True only when obs is on AND real Langfuse keys are present."""
@@ -378,6 +383,7 @@ def _build() -> PylegoConfig:
         # CRM segment thresholds — wired in 100 §2.7.
         crm_hot_min=_env_int("CRM_HOT_MIN", 80),
         crm_warm_min=_env_int("CRM_WARM_MIN", 50),
+        escalation_enabled=_env_bool("ESCALATION_ENABLED", False),
     )
 
 

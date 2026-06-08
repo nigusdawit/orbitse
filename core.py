@@ -3395,6 +3395,11 @@ def _ai_control_registry():
          "env": "SAFETY_FILTER_ENABLED",
          "description": "Keep the visitor concierge professional and family-friendly: instruct it to avoid "
                         "profanity/slurs and soften harsh language. Source-side, so it covers the live reply stream."},
+        {"key": "escalation_enabled", "attr": "escalation_enabled", "type": "bool",
+         "group": "Safety", "label": "Human-handoff escalation",
+         "env": "ESCALATION_ENABLED",
+         "description": "When ON, the visitor concierge proactively offers a human handoff (leave name + "
+                        "contact for a callback) when it can't help, the visitor is frustrated, or asks for a person."},
         # Cost guardrail (task 096) — a hard DAILY spend cap that pauses ALL AI.
         # Amount-only (0 = off); independent of the cost_dashboard feature.
         {"key": "daily_spend_cap_usd", "attr": "daily_spend_cap_usd", "type": "float",
@@ -3741,6 +3746,7 @@ _AI_INERT = {
     "history_token_budget": 0, "history_summarize_enabled": False,
     "respcache_enabled": False, "sqlguard_enabled": False,
     "safety_filter_enabled": False,  # task 096: filter off under master kill-switch
+    "escalation_enabled": False,     # task 101 §3.5: handoff escalation off under master kill-switch
     "redact_enabled": False, "activity_logging_enabled": False,
     "model_routing_enabled": False, "prompt_cache_enabled": False,
     "visitor_profiles_enabled": False, "newsletter_signup_enabled": False,

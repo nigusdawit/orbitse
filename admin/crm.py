@@ -432,6 +432,7 @@ def admin_update_meeting(mt_id):
         params.append((body.get("notes") or "").strip()[:2000])
     if not sets:
         return jsonify({"error": "Nothing to update."}), 400
+    sets.append("updated_at=NOW()")   # task 101 §5.4: track when status changed (review auto-trigger uses it)
     params.extend([mt_id, current_tenant_id()])
     n = execute_db(
         "UPDATE meetings SET " + ", ".join(sets) + " WHERE id=%s AND tenant_id=%s",

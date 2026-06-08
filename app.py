@@ -4687,6 +4687,24 @@ def _compose_safety_paragraph():
     )
 
 
+def _compose_escalation_paragraph():
+    """Return a system-prompt paragraph telling the visitor concierge to proactively
+    offer a human handoff (task 101 §3.5) when it's stuck. Returns "" when the
+    escalation_enabled AI Control knob is off (default) → the prompt is unchanged.
+    Uses the existing request_callback/contact flow; fail-open (never raises)."""
+    try:
+        if not get_ai_setting("escalation_enabled"):
+            return ""
+    except Exception:
+        return ""
+    return (
+        "\n\nHUMAN HANDOFF: If you cannot confidently help, the visitor seems frustrated, "
+        "or they ask to speak with a person, proactively offer to connect them with a human — "
+        "invite them to leave their name and contact so the team can follow up (use the "
+        "callback/contact flow). Don't keep guessing when a handoff would serve them better.\n"
+    )
+
+
 # set_tenant_feature moved to core.py (Track B, FEATURE-FLAG SUBSYSTEM);
 # re-exported via the `from core import` block above.
 
@@ -23145,6 +23163,12 @@ def api_chat():
     except Exception as _e:
         print(f"[safety] failed to compose paragraph: {_e}")
 
+    # task 101 §3.5 — optional human-handoff escalation guidance. "" when off.
+    try:
+        active_prompt = (active_prompt or "") + _compose_escalation_paragraph()
+    except Exception as _e:
+        print(f"[escalation] failed to compose paragraph: {_e}")
+
     # ----- THEME INJECTION -----
     # Build the theme string from defaults + any admin overrides
     theme_colors = {
@@ -27849,6 +27873,12 @@ def admin_update_chatbot():
         _brand_voice_value = data.get("brand_voice") or ""
     else:
         _brand_voice_value = (_prev_row.get("brand_voice") or "")
+    # task 101 §3.2 — proactive greeting auto-open delay (seconds; 0 = off). Clamped
+    # 0..600 so a stray value can't pin the widget open instantly or after an hour.
+    try:
+        _auto_open = max(0, min(int(data.get("auto_open_seconds") or 0), 600))
+    except (TypeError, ValueError):
+        _auto_open = 0
     settings = execute_db(
         """UPDATE chatbot_settings SET
              enabled = %s, mode = %s, agent_name = %s, agent_role = %s,
@@ -27857,6 +27887,7 @@ def admin_update_chatbot():
              brand_voice = %s,
              agent_scope_tightness = %s,
              theme = %s::jsonb,
+             auto_open_seconds = %s,
              updated_at = NOW()
            WHERE id = 1 RETURNING *""",
         (
@@ -27876,6 +27907,7 @@ def admin_update_chatbot():
             # the public side reads it with per-key fallbacks, so an empty {}
             # means "use the built-in look".
             json.dumps(data.get("theme") or {}),
+            _auto_open,
         )
     )
     # Bump the cache content_version when the system_prompt OR brand_voice
@@ -40648,6 +40680,43 @@ def _auto_trigger_completed_orders():
                 print(f"[reviews] auto-queued rsvp#{rs['id']} → dest#{dest['id']} req#{req['id']}")
             except Exception as e:
                 print(f"[reviews] auto-trigger failed for rsvp#{rs['id']}: {e}")
+
+        # --- Completed meetings / appointments (task 101 §5.4) ---------------
+        # When a meeting is marked 'completed' (admin/crm.py bumps updated_at),
+        # queue a review request N days later. Same idempotent NOT EXISTS guard.
+        meetings = query_db(
+            """
+            SELECT m.id, m.name, m.email, m.phone, m.updated_at, m.notes
+              FROM meetings m
+             WHERE m.status = 'completed'
+               AND m.updated_at <= NOW() - (%s * INTERVAL '1 day')
+               AND m.email <> ''
+               AND NOT EXISTS (
+                 SELECT 1 FROM review_requests rr
+                  WHERE rr.source_kind = 'meeting'
+                    AND rr.source_id = m.id
+                    AND rr.destination_id = %s
+               )
+             ORDER BY m.updated_at
+             LIMIT 50
+            """,
+            (days, dest["id"]),
+        ) or []
+        for mt in meetings:
+            try:
+                req = _create_review_request(
+                    destination_id=dest["id"],
+                    channel="email",
+                    recipient_name=mt.get("name") or "",
+                    recipient_email=mt.get("email") or "",
+                    recipient_phone=mt.get("phone") or "",
+                    purchased_item=(mt.get("notes") or "your appointment"),
+                    source_kind="meeting",
+                    source_id=mt["id"],
+                )
+                print(f"[reviews] auto-queued meeting#{mt['id']} → dest#{dest['id']} req#{req['id']}")
+            except Exception as e:
+                print(f"[reviews] auto-trigger failed for meeting#{mt['id']}: {e}")
 
 
 # --- external review snapshots ---------------------------------------------
