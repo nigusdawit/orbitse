@@ -7583,10 +7583,11 @@
 
     function _contactsSegMatch(c, seg) {
       const s = c.lead_score || 0;
-      if (seg === 'hot') return s >= 80;
-      if (seg === 'warm') return s >= 50 && s < 80;
-      if (seg === 'new') return s < 50 && c.status !== 'won';
-      if (seg === 'customers') return c.status === 'won';
+      const won = (c.status === 'won');   // customers are their own segment
+      if (seg === 'hot') return s >= 80 && !won;
+      if (seg === 'warm') return s >= 50 && s < 80 && !won;
+      if (seg === 'new') return s < 50 && !won;
+      if (seg === 'customers') return won;
       return true;   // all
     }
     function contactsSetSeg(seg) { _contactsSeg = seg; _contactsRender(); }
