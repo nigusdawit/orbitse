@@ -16505,6 +16505,125 @@
       }
     }
 
+    /* ===== Billing (gap §6.2) — the tenant's platform subscription: plan + invoices +
+       Stripe portal. Super-admin only. Everything degrades gracefully when the platform key
+       is absent or the tenant isn't linked (banner explains the state). ===== */
+    async function loadBilling() {
+      if (!await _superAdminGuard('tab-billing', loadBilling)) return;
+      const planEl = document.getElementById('billing-plan');
+      const invEl = document.getElementById('billing-invoices');
+      const banner = document.getElementById('billing-banner');
+      const portalBtn = document.getElementById('billing-portal-btn');
+      if (planEl) planEl.innerHTML = '<span class="bl-muted">Loading…</span>';
+      try {
+        const res = await fetch('/admin/api/billing', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const d = await res.json();
+        _billingRenderPlan(d, planEl);
+        _billingRenderInvoices(d, invEl);
+        _billingRenderBanner(d, banner);
+        if (portalBtn) portalBtn.style.display = d.portal_available ? '' : 'none';
+        const link = d.link || {};
+        const c = document.getElementById('billing-cust-id');
+        const s = document.getElementById('billing-sub-id');
+        if (c) c.value = link.customer_id || '';
+        if (s) s.value = link.subscription_id || '';
+      } catch (e) {
+        console.error('billing load failed', e);
+        window.appReportError(e, 'app-main.js:loadBilling');
+        if (planEl) planEl.innerHTML = '<div class="bl-muted" style="color:#ef4444;">Could not load billing: ' + escapeHTML(String(e.message || e)) + '</div>';
+      }
+    }
+
+    function _billingMoney(cents, currency) {
+      if (cents == null || isNaN(cents)) return '—';
+      const cur = currency || 'USD';
+      return (cur === 'USD' ? '$' : '') + (cents / 100).toFixed(2) + (cur === 'USD' ? '' : ' ' + cur);
+    }
+    function _billingDate(ts) {
+      if (!ts) return '—';
+      try { return new Date(ts * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }); }
+      catch (_) { return '—'; }
+    }
+
+    function _billingRenderPlan(d, el) {
+      if (!el) return;
+      const plan = d.plan || {};
+      const sub = d.subscription;
+      let priceLine = plan.price_display ? escapeHTML(plan.price_display) : '';
+      if (sub && sub.amount != null) {
+        priceLine = _billingMoney(sub.amount, sub.currency) + (sub.interval ? ' / ' + escapeHTML(sub.interval) : '');
+      }
+      let statusLine = '';
+      if (sub) {
+        const renew = sub.cancel_at_period_end ? 'Cancels' : 'Renews';
+        statusLine = `<div class="bl-muted" style="margin-top:0.4rem;">Status: <strong>${escapeHTML(sub.status || '—')}</strong> · ${renew} ${_billingDate(sub.current_period_end)}</div>`;
+      }
+      el.innerHTML = `
+        <div class="bl-plan-name" data-testid="text-billing-plan">${escapeHTML(plan.name || 'Free')}</div>
+        ${priceLine ? `<div style="margin-top:0.25rem; font-weight:600;">${priceLine}</div>` : ''}
+        ${statusLine}
+      `;
+    }
+
+    function _billingRenderInvoices(d, el) {
+      if (!el) return;
+      const inv = d.invoices || [];
+      if (!inv.length) {
+        el.innerHTML = '<span class="bl-muted">' + ((d.configured && d.linked) ? 'No invoices yet.' : 'Connect Stripe to see invoices.') + '</span>';
+        return;
+      }
+      const rows = inv.map(i => {
+        const st = (i.status || '').toLowerCase();
+        const cls = st === 'paid' ? 'paid' : ((st === 'void' || st === 'uncollectible') ? 'void' : 'open');
+        const label = escapeHTML(i.number || _billingDate(i.created));
+        const link = i.hosted_invoice_url ? `<a href="${escapeHTML(i.hosted_invoice_url)}" target="_blank" rel="noopener" style="color:var(--admin-link);">view</a>` : '';
+        return `<tr><td>${label}</td><td>${_billingMoney(i.amount_paid, i.currency)}</td><td><span class="bl-badge ${cls}">${escapeHTML(i.status || '—')}</span></td><td>${link}</td></tr>`;
+      }).join('');
+      el.innerHTML = `<table><tbody>${rows}</tbody></table>`;
+    }
+
+    function _billingRenderBanner(d, el) {
+      if (!el) return;
+      let msg = '';
+      if (!d.configured) {
+        msg = 'Platform billing isn\'t configured yet. Add <code>PLATFORM_STRIPE_SECRET_KEY</code> (your SaaS Stripe account) to show live subscription status, invoices, and the billing portal.';
+      } else if (!d.linked) {
+        msg = 'This tenant isn\'t linked to a Stripe customer yet. Use “Link Stripe customer” below to paste the customer ID from your platform account.';
+      } else if (d.stripe_error) {
+        msg = escapeHTML(d.stripe_error) + ' Check that <code>PLATFORM_STRIPE_SECRET_KEY</code> is valid and the IDs belong to that account.';
+      }
+      el.innerHTML = msg ? `<div class="bl-banner">${msg}</div>` : '';
+    }
+
+    async function billingPortal() {
+      try {
+        const res = await fetch('/admin/api/billing/portal', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const d = await res.json().catch(() => ({}));
+        if (res.ok && d.url) { window.open(d.url, '_blank', 'noopener'); }
+        else { showToast(d.message || 'Could not open the billing portal', 'error'); }
+      } catch (e) {
+        showToast('Could not open the billing portal', 'error');
+      }
+    }
+
+    async function billingLink() {
+      const cust = ((document.getElementById('billing-cust-id') || {}).value || '').trim();
+      const sub = ((document.getElementById('billing-sub-id') || {}).value || '').trim();
+      try {
+        const res = await fetch('/admin/api/billing/link', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ stripe_customer_id: cust, stripe_subscription_id: sub }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (res.ok && d.success) { showToast('Stripe link saved'); loadBilling(); }
+        else { showToast(d.message || 'Could not save link', 'error'); }
+      } catch (e) {
+        showToast('Could not save link', 'error');
+      }
+    }
+
     function renderPlansFeaturesTenant(data, el) {
       if (!el) return;
       const t = data.tenant || {};

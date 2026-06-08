@@ -1,0 +1,65 @@
+{# admin/tabs/_billing.html — 'billing' tab (gap §6.2). The tenant's subscription to THIS
+   platform: current plan + invoices + a Stripe billing-portal link. Super-admin only (same
+   as Plans & Features). loadBilling() fills the containers; everything degrades gracefully
+   when PLATFORM_STRIPE_SECRET_KEY is absent or the tenant isn't linked. Styling is scoped
+   under #tab-billing with --admin-* vars so it can't leak and works light + dark. #}
+<div id="tab-billing" class="tab-content">
+  <style>
+    #tab-billing .bl-grid { display:grid; grid-template-columns: minmax(0,1fr) minmax(0,1.2fr); gap:1.25rem; align-items:start; }
+    @media (max-width: 900px) { #tab-billing .bl-grid { grid-template-columns: 1fr; } }
+    #tab-billing .bl-card { border:1px solid var(--admin-border); border-radius:12px; background:var(--admin-card-bg, var(--admin-bg)); overflow:hidden; }
+    #tab-billing .bl-card-h { padding:0.75rem 1rem; border-bottom:1px solid var(--admin-border); font-weight:600; }
+    #tab-billing .bl-card-b { padding:1rem; }
+    #tab-billing .bl-muted { color:var(--admin-text-muted); font-size:0.82rem; }
+    #tab-billing .bl-plan-name { font-size:1.5rem; font-weight:800; }
+    #tab-billing table { width:100%; border-collapse:collapse; }
+    #tab-billing th, #tab-billing td { text-align:left; padding:0.5rem 0.6rem; border-bottom:1px solid var(--admin-border); font-variant-numeric:tabular-nums; }
+    #tab-billing .bl-badge { display:inline-block; padding:1px 8px; border-radius:6px; font-size:0.74rem; font-weight:600; }
+    #tab-billing .bl-badge.paid { background:rgba(22,101,52,0.18); color:#22c55e; }
+    #tab-billing .bl-badge.open, #tab-billing .bl-badge.draft { background:rgba(146,64,14,0.18); color:#f59e0b; }
+    #tab-billing .bl-badge.void, #tab-billing .bl-badge.uncollectible { background:rgba(127,29,29,0.18); color:#ef4444; }
+    #tab-billing .bl-banner { padding:0.75rem 1rem; border-radius:10px; margin-bottom:1rem; font-size:0.88rem; border:1px solid var(--admin-border); background:var(--admin-bg-subtle, rgba(245,158,11,0.10)); }
+    #tab-billing .bl-form { display:flex; flex-wrap:wrap; gap:0.75rem; align-items:end; }
+    #tab-billing .bl-form label { display:flex; flex-direction:column; gap:0.25rem; font-size:0.8rem; }
+    #tab-billing .bl-form input { padding:0.45rem 0.6rem; border:1px solid var(--admin-border); border-radius:8px; background:var(--admin-input-bg, transparent); color:var(--admin-text); min-width:240px; }
+  </style>
+
+  <div class="section-header-admin">
+    <div>
+      <h2>Billing</h2>
+      <p>Your subscription to the platform — current plan, invoice history, and payment management.</p>
+    </div>
+    <button class="btn btn-primary" id="billing-portal-btn" onclick="billingPortal()" style="display:none;" data-testid="button-billing-portal">Manage in Stripe ↗</button>
+  </div>
+
+  <div id="billing-banner"></div>
+
+  <div class="bl-grid">
+    <div class="bl-card">
+      <div class="bl-card-h">Current plan</div>
+      <div class="bl-card-b" id="billing-plan"><span class="bl-muted">Loading…</span></div>
+    </div>
+    <div class="bl-card">
+      <div class="bl-card-h">Invoices</div>
+      <div class="bl-card-b" id="billing-invoices"><span class="bl-muted">—</span></div>
+    </div>
+  </div>
+
+  {# Super-admin: link this tenant to its platform Stripe customer/subscription. No Stripe
+     call — just stores the ids so the view lights up once the platform key is set. #}
+  <div class="bl-card" style="margin-top:1.25rem;">
+    <div class="bl-card-h">Link Stripe customer <span class="bl-muted">(platform account)</span></div>
+    <div class="bl-card-b">
+      <p class="bl-muted" style="margin-top:0;">Paste this tenant's IDs from your <strong>platform</strong> Stripe account (the one set via <code>PLATFORM_STRIPE_SECRET_KEY</code>). Subscription ID is optional but enables status + renewal.</p>
+      <div class="bl-form">
+        <label>Customer ID
+          <input type="text" id="billing-cust-id" placeholder="cus_…" data-testid="input-billing-customer">
+        </label>
+        <label>Subscription ID
+          <input type="text" id="billing-sub-id" placeholder="sub_… (optional)" data-testid="input-billing-subscription">
+        </label>
+        <button class="btn btn-primary" onclick="billingLink()" data-testid="button-billing-link">Save link</button>
+      </div>
+    </div>
+  </div>
+</div>

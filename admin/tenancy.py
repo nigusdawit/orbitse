@@ -20,11 +20,14 @@ lives in core (Track B): list_tenant_features / set_tenant_feature do the read +
 
 Registered in app.py via app.register_blueprint(tenancy_bp), after crm_bp.
 """
+import os
+
 from flask import Blueprint, request, jsonify
 
 from core import (
     capture_exc,
     query_db,
+    execute_db,
     admin_required,
     _require_super_admin_role,
     current_tenant_id,
@@ -32,6 +35,14 @@ from core import (
     set_tenant_feature,
     set_tenant_feature_visible,
 )
+
+# Stripe SDK is OPTIONAL here — billing (gap §6.2) only does anything once the operator
+# sets PLATFORM_STRIPE_SECRET_KEY. Guard the import so the module loads fine on installs
+# without the package or without billing configured.
+try:
+    import stripe as _stripe
+except Exception:  # pragma: no cover - package always present in this repo's requirements
+    _stripe = None
 
 tenancy_bp = Blueprint("tenancy", __name__)
 
@@ -115,3 +126,161 @@ def admin_toggle_tenant_feature(name):
         capture_exc(e, "tenancy.admin_toggle_tenant_feature")
         print(f"[plans] toggle feature {name} failed: {e}")
         return jsonify({"error": "toggle_failed", "detail": str(e)}), 500
+
+
+# --- Billing (gap §6.2) -----------------------------------------------------
+# Shows the TENANT's subscription to THIS PLATFORM (the client paying us). That runs on a
+# SEPARATE platform Stripe account (PLATFORM_STRIPE_SECRET_KEY), distinct from each client's
+# own order-checkout Stripe (STRIPE_SECRET_KEY) — so we pass the platform key per-call and
+# never touch the order-checkout client's global stripe.api_key. Super-admin only, matching
+# the Plans & Features tab. Everything degrades gracefully: the plan always renders from the
+# DB; a missing key / unlinked tenant / Stripe error becomes a clear flag, never a hard 500.
+
+def _platform_stripe_key():
+    return (os.environ.get("PLATFORM_STRIPE_SECRET_KEY") or "").strip()
+
+
+def _billing_configured():
+    return bool(_stripe and _platform_stripe_key())
+
+
+def _tenant_billing_row(tid):
+    return query_db(
+        "SELECT t.id, t.name AS tenant_name, t.status AS tenant_status, "
+        "       t.stripe_customer_id, t.stripe_subscription_id, "
+        "       p.slug AS plan_code, p.name AS plan_name, p.price_display "
+        "  FROM tenants t LEFT JOIN plans p ON p.id = t.plan_id "
+        " WHERE t.id = %s",
+        (tid,), fetchone=True,
+    ) or {}
+
+
+@tenancy_bp.route("/admin/api/billing", methods=["GET"])
+@admin_required
+def admin_billing():
+    """Current plan (always, from the DB) + — when PLATFORM_STRIPE_SECRET_KEY is set AND the
+    tenant is linked — live subscription status + recent invoices from the platform Stripe
+    account. Fail-open: any missing-key / not-linked / Stripe error degrades to a flag."""
+    _guard = _require_super_admin_role()
+    if _guard is not None:
+        return _guard
+    try:
+        tid = current_tenant_id()
+        row = _tenant_billing_row(tid)
+        cust = (row.get("stripe_customer_id") or "").strip()
+        sub_id = (row.get("stripe_subscription_id") or "").strip()
+        out = {
+            "plan": {
+                "code": row.get("plan_code") or "",
+                "name": row.get("plan_name") or "Free",
+                "price_display": row.get("price_display") or "",
+            },
+            "tenant": {
+                "id": row.get("id") or tid,
+                "name": row.get("tenant_name") or "",
+                "status": row.get("tenant_status") or "",
+            },
+            "configured": _billing_configured(),
+            "linked": bool(cust),
+            "link": {"customer_id": cust, "subscription_id": sub_id},
+            "subscription": None,
+            "invoices": [],
+            "portal_available": False,
+            "stripe_error": "",
+        }
+        if not out["configured"] or not cust:
+            return jsonify(out)
+        # Live read from the PLATFORM account (read-only; per-call api_key keeps it isolated
+        # from the order-checkout client). Any failure here is non-fatal — we still return
+        # the plan + flags so the tab renders.
+        key = _platform_stripe_key()
+        try:
+            if sub_id:
+                sub = _stripe.Subscription.retrieve(sub_id, api_key=key, expand=["items.data.price"])
+                item = ((sub.get("items") or {}).get("data") or [{}])[0]
+                price = item.get("price") or {}
+                out["subscription"] = {
+                    "status": sub.get("status") or "",
+                    "current_period_end": sub.get("current_period_end"),
+                    "cancel_at_period_end": bool(sub.get("cancel_at_period_end")),
+                    "amount": price.get("unit_amount"),
+                    "currency": (price.get("currency") or "usd").upper(),
+                    "interval": (price.get("recurring") or {}).get("interval") or "",
+                }
+            inv = _stripe.Invoice.list(customer=cust, limit=6, api_key=key)
+            out["invoices"] = [{
+                "number": i.get("number") or "",
+                "created": i.get("created"),
+                "amount_paid": i.get("amount_paid"),
+                "currency": (i.get("currency") or "usd").upper(),
+                "status": i.get("status") or "",
+                "hosted_invoice_url": i.get("hosted_invoice_url") or "",
+            } for i in (inv.get("data") or [])]
+            out["portal_available"] = True
+        except Exception as e:
+            print(f"[billing] stripe fetch failed: {e}")
+            out["stripe_error"] = "Could not reach Stripe with the platform key."
+        return jsonify(out)
+    except Exception as e:
+        capture_exc(e, "tenancy.admin_billing")
+        print(f"[billing] admin_billing failed: {e}")
+        return jsonify({"error": "billing_failed", "detail": str(e)}), 500
+
+
+@tenancy_bp.route("/admin/api/billing/portal", methods=["POST"])
+@admin_required
+def admin_billing_portal():
+    """Create a Stripe billing-portal session for this tenant's platform customer so the
+    operator can manage payment method / view invoices in Stripe. Returns {url}."""
+    _guard = _require_super_admin_role()
+    if _guard is not None:
+        return _guard
+    if not _billing_configured():
+        return jsonify({"error": "not_configured",
+                        "message": "Add PLATFORM_STRIPE_SECRET_KEY to enable the billing portal."}), 400
+    try:
+        tid = current_tenant_id()
+        cust = (_tenant_billing_row(tid).get("stripe_customer_id") or "").strip()
+        if not cust:
+            return jsonify({"error": "not_linked",
+                            "message": "Link this tenant to a Stripe customer first."}), 400
+        return_url = request.host_url.rstrip("/") + "/admin"
+        sess = _stripe.billing_portal.Session.create(
+            customer=cust, return_url=return_url, api_key=_platform_stripe_key(),
+        )
+        return jsonify({"url": sess.get("url") or ""})
+    except Exception as e:
+        capture_exc(e, "tenancy.admin_billing_portal")
+        print(f"[billing] portal session failed: {e}")
+        return jsonify({"error": "portal_failed",
+                        "message": "Could not create a billing portal session."}), 502
+
+
+@tenancy_bp.route("/admin/api/billing/link", methods=["POST"])
+@admin_required
+def admin_billing_link():
+    """Link this tenant to its platform Stripe customer/subscription so the Billing view can
+    pull live status once PLATFORM_STRIPE_SECRET_KEY is set. Stores the ids only — no Stripe
+    call. Light format check (cus_/sub_ prefixes; blank clears the link)."""
+    _guard = _require_super_admin_role()
+    if _guard is not None:
+        return _guard
+    body = request.get_json(silent=True) or {}
+    cust = str(body.get("stripe_customer_id") or "").strip()
+    sub = str(body.get("stripe_subscription_id") or "").strip()
+    if cust and not cust.startswith("cus_"):
+        return jsonify({"error": "bad_customer_id", "message": "Stripe customer ids start with 'cus_'."}), 400
+    if sub and not sub.startswith("sub_"):
+        return jsonify({"error": "bad_subscription_id", "message": "Stripe subscription ids start with 'sub_'."}), 400
+    try:
+        tid = current_tenant_id()
+        execute_db(
+            "UPDATE tenants SET stripe_customer_id=%s, stripe_subscription_id=%s, updated_at=NOW() "
+            "WHERE id=%s",
+            (cust, sub, tid),
+        )
+        return jsonify({"success": True, "stripe_customer_id": cust, "stripe_subscription_id": sub})
+    except Exception as e:
+        capture_exc(e, "tenancy.admin_billing_link")
+        print(f"[billing] link failed: {e}")
+        return jsonify({"error": "link_failed", "detail": str(e)}), 500

@@ -549,6 +549,11 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l9 4.5v11L12 22l-9-4.5v-11L12 2z"/><path d="M3 6.5L12 11l9-4.5"/><line x1="12" y1="22" x2="12" y2="11"/></svg>
       Plans &amp; Features
     </button>
+    {# Billing (gap §6.2) — super admin ONLY: subscription, invoices, Stripe portal. #}
+    <button class="tab-btn" onclick="switchTab('billing', this); loadBilling();" data-testid="tab-billing">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
+      Billing
+    </button>
     {# WP Plugin — super admin ONLY: publish releases, keys, shareable client links. #}
     <button class="tab-btn" onclick="switchTab('wp-plugin', this); loadWpPlugin();" data-testid="tab-wp-plugin">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 7h2a2 2 0 0 1 2 2v2"/><path d="M10 7H8a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2"/><path d="M12 3v8"/><path d="m9 8 3 3 3-3"/></svg>
@@ -1565,6 +1570,11 @@ TO CUSTOMIZE THIS DASHBOARD:
        PLANS & FEATURES TAB — tenant plan info + per-feature on/off toggles
        ==================================================================== -->
   {% include "admin/tabs/_plans-features.html" %}
+
+  <!-- ====================================================================
+       BILLING TAB (gap §6.2) — platform subscription: plan + invoices + portal
+       ==================================================================== -->
+  {% include "admin/tabs/_billing.html" %}
 
   <!--
   ========================================================================
