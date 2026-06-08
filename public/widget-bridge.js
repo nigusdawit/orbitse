@@ -50,10 +50,14 @@
   // highest visible surface's top edge down to the bottom of the viewport.
   // Includes the bottom-left "saved pages" bubble + its popover so the band
   // grows to show them (otherwise the popover opens above the iframe top edge
-  // and is clipped). The bar-thinking dots live INSIDE #chatbot-container so
-  // they are already covered by it.
+  // and is clipped). "bar-thinking-indicator" (the live "Browsing the gallery…"
+  // status pill above the bar) is measured EXPLICITLY: it grows wider than the
+  // bar as its status text changes, and a pill wider than #chatbot-container
+  // would overflow that container's clip rect and hide the text — so it needs
+  // its own rect, not just the container's.
   var FLOAT_IDS = ["chatbot-container", "chatbot-panel", "voice-intro-card",
-                   "side-chat-panel", "page-archive-bubble", "page-archive-popover"];
+                   "side-chat-panel", "page-archive-bubble", "page-archive-popover",
+                   "bar-thinking-indicator"];
 
   // Padding added around each measured surface. SIDE_PAD keeps soft shadows /
   // focus rings from being clipped. TOP_PAD is extra headroom ABOVE each surface
@@ -210,6 +214,11 @@
       obs.observe(document.documentElement, {
         attributes: true, childList: true, subtree: true,
         attributeFilter: ["class", "style", "hidden"],
+        // characterData so the live status pill re-syncs when only its TEXT
+        // changes ("Working on it…" -> "Browsing the gallery…"). Without this
+        // the clip stays sized to the first label and the longer text is cut
+        // off. Bursts are coalesced by schedule() so this stays cheap.
+        characterData: true,
       });
     } catch (e) {}
     window.addEventListener("resize", schedule, { passive: true });

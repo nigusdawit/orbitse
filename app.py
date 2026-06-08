@@ -24154,6 +24154,63 @@ def api_chat():
                 if act in INTRUSIVE_PRESENTATION_ACTIONS:
                     print(f"[chat] presentation_active: stripping '{act}' command so deck can resume")
                     cmd = None
+            # ---- Deterministic gallery fallback ---------------------------
+            # The visitor chat streams at temperature 0.7, so the model's
+            # command choice for a plain "show me your work" request is
+            # unreliable: it often answers with a text list of project names
+            # (nothing for the visitor to actually look at), or it scrolls to a
+            # work-showcase landing section ("Experiences"/"Highlights") that is
+            # HIDDEN in embed/widget mode — either way the visitor sees nothing.
+            # When the visitor clearly asks to SEE the gallery / work / portfolio
+            # we make sure the actual gallery opens by synthesizing a navigate to
+            # the first gallery card. We fire only when the model returned NO
+            # command, OR when it scrolled to a work-showcase section — we never
+            # touch a deliberate scroll to a DISTINCT section (testimonials,
+            # team, contact, FAQ, pricing). The frontend opens the gallery at the
+            # first card if the slug is missing, so this is safe. Skipped while a
+            # presentation deck is on screen.
+            try:
+                # "gallery" on its own is an unambiguous request for the gallery.
+                # Everything else (work/projects/photos/portfolio/examples) must
+                # be paired with a SEE/SHOW-type verb so we don't false-trigger on
+                # unrelated uses ("investment portfolio", "portfolio pricing").
+                _gallery_intent = re.search(
+                    r'\bgallery\b'
+                    r'|\b(?:show|see|view|look|browse|check|got|have|any)\b'
+                    r'[\w\s]{0,30}'
+                    r'\b(?:work|projects?|photos?|pictures?|images?|examples?|portfolio)\b',
+                    message or "", re.I,
+                )
+                _scrolls_to_showcase = (
+                    isinstance(cmd, dict)
+                    and cmd.get("action") == "scrollToSection"
+                    and re.search(
+                        r'experien|highlight|project|work|gallery|portfolio|showcase',
+                        str(cmd.get("target") or ""), re.I,
+                    )
+                )
+                if (
+                    _gallery_intent
+                    and not presentation_active
+                    and ((not cmd) or _scrolls_to_showcase)
+                ):
+                    _first = query_db(
+                        "SELECT slug FROM gallery_cards "
+                        "WHERE slug IS NOT NULL AND slug <> '' "
+                        "ORDER BY sort_order ASC LIMIT 1",
+                        fetchone=True,
+                    )
+                    if _first and _first.get("slug"):
+                        _was = cmd.get("action") if isinstance(cmd, dict) else None
+                        cmd = {"action": "navigate", "target": _first["slug"]}
+                        print(
+                            f"[chat] gallery-intent fallback: visitor said "
+                            f"{(message or '')[:60]!r} (was={_was}) → navigate "
+                            f"'{_first['slug']}'"
+                        )
+            except Exception as _e:
+                print(f"[chat] gallery-intent fallback skipped: {_e}")
+
             if reply:
                 _va["final"] = reply
                 yield f"data: {json.dumps({'type': 'text', 'content': reply})}\n\n"

@@ -7661,10 +7661,19 @@ function executeCommand(cmd) {
        and show it to the user while continuing the conversation.
     */
     case 'navigate': {
-      const card = galleryCards.find(c => c.slug === cmd.target);
-      if (!card) {
-        console.warn('Navigate command: card not found for slug:', cmd.target);
-        return;
+      /* Find the requested card by slug. If the AI sent a broad or placeholder
+         target (e.g. "gallery", "first", or a slug that no longer exists),
+         fall back to opening the gallery at the FIRST card instead of doing
+         nothing — a "show me your work" request should always SHOW something.
+         Only bail when there are no gallery cards at all. */
+      let cardIndex = galleryCards.findIndex(c => c.slug === cmd.target);
+      if (cardIndex < 0) {
+        if (!galleryCards.length) {
+          console.warn('Navigate command: no gallery cards to show for target:', cmd.target);
+          return;
+        }
+        console.warn('Navigate command: slug not found, opening gallery at first card:', cmd.target);
+        cardIndex = 0;
       }
 
       /* Close the fullscreen canvas / immersive page if a visual was showing */
@@ -7672,10 +7681,7 @@ function executeCommand(cmd) {
       closeImmersivePage();
 
       /* Navigate the actual gallery to this slide */
-      const cardIndex = galleryCards.findIndex(c => c.slug === cmd.target);
-      if (cardIndex >= 0) {
-        goToSlide(cardIndex);
-      }
+      goToSlide(cardIndex);
 
       /* Make sure the gallery is visible */
       if (document.getElementById('gallery-view') && !document.getElementById('gallery-view').classList.contains('active')) {
