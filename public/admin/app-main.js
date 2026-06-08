@@ -4383,7 +4383,7 @@
         const tbody = document.getElementById('testimonials-tbody');
 
         if (!items.length) {
-          tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No testimonials yet. Click "+ Add Testimonial" to create one.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No testimonials yet. Click "+ Add Testimonial" to create one.</td></tr>';
           return;
         }
 
@@ -4393,7 +4393,7 @@
             ? `<img src="${esc(item.image_url)}" alt="${esc(item.reviewer_name)}" class="cell-image" style="border-radius: 50%; width: 40px; height: 40px;">`
             : '<span style="color: var(--admin-text-muted);">\u2014</span>';
           return `
-            <tr data-id="${item.id}">
+            <tr data-id="${item.id}" data-gx-id="${item.id}">
               <td><span class="drag-handle" title="Drag to reorder">&#x2630;</span></td>
               <td>${imgCell}</td>
               <td><strong>${esc(item.reviewer_name)}</strong></td>
@@ -4408,9 +4408,33 @@
           `;
         }).join('');
         initSortable('testimonials-tbody', 'testimonials');
+        gxWireTestimonialsBulk();
       } catch (err) {
         showToast('Failed to load testimonials', 'error');
       }
+    }
+
+    // task 098 §0.5 — gx-table bulk-select pilot. Re-enhance after each render (so freshly
+    // rendered rows get checkboxes — gxTable.enhance is idempotent) and wire the gx:bulk
+    // handler ONCE. Bulk delete just loops the existing per-row DELETE route, then reloads.
+    // Fail-safe: no-ops if the gx-table component isn't present.
+    function gxWireTestimonialsBulk() {
+      var t = document.getElementById('testimonials-table');
+      if (!t || !window.gxTable) return;
+      window.gxTable.enhance(t);
+      if (t.__gxBulkWired) return;
+      t.__gxBulkWired = true;
+      t.addEventListener('gx:bulk', async function (e) {
+        var d = e.detail || {};
+        if (d.action !== 'delete' || !d.ids || !d.ids.length) return;
+        if (!confirm('Delete ' + d.ids.length + ' testimonial' + (d.ids.length === 1 ? '' : 's') + '? This cannot be undone.')) return;
+        var ok = 0;
+        for (var i = 0; i < d.ids.length; i++) {
+          try { var r = await fetch('/admin/api/testimonials/' + d.ids[i], { method: 'DELETE' }); if (r.ok) ok++; } catch (_) {}
+        }
+        showToast('Deleted ' + ok + ' of ' + d.ids.length + ' testimonial' + (d.ids.length === 1 ? '' : 's'));
+        loadTestimonials();
+      });
     }
 
     function showTestimonialForm() {

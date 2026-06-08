@@ -44,7 +44,16 @@
       </div>
     </div>
 
-    <table class="data-table" id="testimonials-table">
+    {# task 098 §0.5 — gx-table bulk-select pilot. The data-gx-actions attribute opts this
+       table into window.gxTable: it injects a select-all + per-row checkbox column and a
+       bulk bar, and fires gx:bulk on action click. loadTestimonials() re-enhances after
+       each render and runs the bulk delete via the existing per-row route. The scoped rule
+       sizes the injected checkbox column without pulling in the full .gx-table table style
+       (which would clash with .data-table). #}
+    <style>
+      #testimonials-table .gx-check-th, #testimonials-table .gx-check-td { width:34px; text-align:center; }
+    </style>
+    <table class="data-table" id="testimonials-table" data-gx-actions="delete:Delete">
       <thead>
         <tr>
           <th style="width:30px;"></th>
@@ -57,7 +66,7 @@
         </tr>
       </thead>
       <tbody id="testimonials-tbody">
-        <tr><td colspan="7" class="empty-state">Loading...</td></tr>
+        <tr><td colspan="8" class="empty-state">Loading...</td></tr>
       </tbody>
     </table>
   </div>
