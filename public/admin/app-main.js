@@ -2209,7 +2209,7 @@
             ? '<span class="gxi-dot" title="Last message from visitor — awaiting reply"></span>' : '';
           const pausedChip = c.ai_paused ? '<span class="gxi-chip" title="AI auto-reply is paused">AI paused</span>' : '';
           return `<button type="button" class="gxi-thread" data-conv="${c.id}" onclick="openConversation(${c.id})" data-testid="thread-${c.id}">
-            <div class="gxi-th-top">${liveDot}<span class="gxi-th-vid" title="${esc(vid)}">${label}</span>${pausedChip}<span class="gxi-th-time">${esc(t)}</span></div>
+            <div class="gxi-th-top">${liveDot}<span class="gxi-th-vid" title="${_attrEsc(vid)}">${label}</span>${pausedChip}<span class="gxi-th-time">${esc(t)}</span></div>
             <div class="gxi-th-msg">${esc((c.first_message || '').substring(0, 70))}</div>
           </button>`;
         }).join('');
@@ -2537,8 +2537,8 @@
             : '<span class="badge" style="background:#dc2626;color:#fff;">stale</span>';
           return `
             <tr>
-              <td class="cell-truncate" title="${esc(r.query_text || '')}">${esc(r.query_excerpt || '')}</td>
-              <td class="cell-truncate" title="${esc(r.response_text || '')}">${esc(r.response_excerpt || '')}</td>
+              <td class="cell-truncate" title="${_attrEsc(r.query_text || '')}">${esc(r.query_excerpt || '')}</td>
+              <td class="cell-truncate" title="${_attrEsc(r.response_text || '')}">${esc(r.response_excerpt || '')}</td>
               <td>${Number(r.hit_count || 0).toLocaleString()}</td>
               <td>${esc(lastHit)}</td>
               <td>${status}</td>
@@ -7558,6 +7558,15 @@
     let _contactsStats = {};
     let _contactsSeg = 'all';          // all | hot | warm | new | customers
     let _contactsSort = 'score';       // score | recent
+    let _contactsView = [];            // currently-rendered (filtered+sorted) rows — index-addressable for Convert
+    // Attribute-context escaper. esc/_esc6 (escapeHTML) escape & < > but NOT quotes,
+    // so they are unsafe for an HTML ATTRIBUTE holding untrusted data. This escapes
+    // quotes too. Used for any untrusted value (e.g. visitor_id) placed in an attribute.
+    function _attrEsc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
 
     async function loadContacts() {
       const el = document.getElementById('crm-contacts');
@@ -7609,22 +7618,27 @@
       rows = rows.slice().sort(_contactsSort === 'recent'
         ? (a, b) => String(b.last_activity || '').localeCompare(String(a.last_activity || ''))
         : (a, b) => (b.lead_score || 0) - (a.lead_score || 0));
+      _contactsView = rows;   // index-addressable for the delegated Convert handler
       if (!rows.length) { el.innerHTML = html + '<p class="empty-state">No contacts in this segment.</p>'; return; }
       html += '<table style="width:100%;border-collapse:collapse;font-size:13px;"><thead><tr style="text-align:left;opacity:.7;">'
         + '<th style="padding:6px;">Contact</th><th style="padding:6px;">Interest</th><th style="padding:6px;">Source</th>'
         + '<th style="padding:6px;">Lead score</th><th style="padding:6px;">Last activity</th><th style="padding:6px;">Status</th>'
         + '<th style="padding:6px;">Actions</th></tr></thead><tbody>';
-      rows.forEach(c => {
+      rows.forEach((c, i) => {
         const vidShort = c.visitor_id ? c.visitor_id.replace('cv_', '').replace('cs_', '').slice(0, 12) : '';
         const who = c.name || c.email || vidShort || '—';
         const sub = (c.email && c.email !== who) ? '<br><span style="opacity:.6;font-size:11px;">' + _esc6(c.email) + '</span>' : '';
         const la = c.last_activity ? new Date(c.last_activity).toLocaleString() : '';
         const isCustomer = (c.status === 'won');
+        // SECURITY: the Convert button carries ONLY a numeric row index (data-ci).
+        // The real lead_id/visitor_id are read from _contactsView at click time via
+        // a delegated listener, so the attacker-controlled visitor_id never enters
+        // an HTML/JS-executable context. The title uses _attrEsc (quote-safe).
         const conv = isCustomer
           ? '<span style="opacity:.6;font-size:12px;">✓ Customer</span>'
-          : '<button class="btn-secondary" style="padding:3px 8px;font-size:12px;" onclick="contactConvert(' + (c.lead_id || 'null') + ',\'' + _esc6(c.visitor_id || '') + '\')">Convert</button>';
+          : '<button class="btn-secondary" style="padding:3px 8px;font-size:12px;" data-ci="' + i + '" data-testid="contact-convert">Convert</button>';
         html += '<tr style="border-top:1px solid rgba(255,255,255,.06);">'
-          + '<td style="padding:6px;" title="' + _esc6(c.visitor_id || '') + '">' + _esc6(who) + sub + '</td>'
+          + '<td style="padding:6px;" title="' + _attrEsc(c.visitor_id || '') + '">' + _esc6(who) + sub + '</td>'
           + '<td style="padding:6px;">' + _esc6(c.interest || '') + '</td>'
           + '<td style="padding:6px;">' + _esc6(c.source || '') + '</td>'
           + '<td style="padding:6px;"><strong>' + (c.lead_score || 0) + '</strong></td>'
@@ -7633,6 +7647,17 @@
           + '<td style="padding:6px;white-space:nowrap;">' + conv + '</td></tr>';
       });
       el.innerHTML = html + '</tbody></table>';
+      // Delegated Convert handler — bound once on the pane. Reads the row object
+      // from _contactsView by index (no untrusted data inlined into the markup).
+      if (!el._convBound) {
+        el._convBound = true;
+        el.addEventListener('click', function (ev) {
+          const btn = ev.target.closest && ev.target.closest('button[data-ci]');
+          if (!btn) return;
+          const c = _contactsView[parseInt(btn.getAttribute('data-ci'), 10)];
+          if (c) contactConvert(c.lead_id, c.visitor_id);
+        });
+      }
     }
 
     async function contactConvert(leadId, visitorId) {
