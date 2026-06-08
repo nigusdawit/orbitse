@@ -23,7 +23,6 @@ from core import (
     query_db,
     execute_db,
     admin_required,
-    _require_super_admin_role,
     current_tenant_id,
     _vp_as_list,
     capture_exc,
@@ -92,15 +91,15 @@ def admin_chat_detail(conv_id):
 @reporting_bp.route("/admin/api/conversations/<int:conv_id>/context", methods=["GET"])
 @admin_required
 def admin_conversation_context(conv_id):
-    """Side-panel context for a conversation (task 095, gap §2.4). SUPER-ADMIN only
-    (visitor PII). Returns the visitor_profile (lead_score / interests / needs / summary
-    — 'intent' ≈ interests+needs, the closest existing signal), a derived source channel
-    (latest page_views utm/referrer for the visitor), and the linked lead, if any. Each
+    """Side-panel context for a conversation (task 095, gap §2.4). Available to any
+    logged-in admin who can open the Chat History inbox — the visitor context is part
+    of handling a conversation, so it shares the same audience as the inbox itself
+    (single-tenant template, no cross-tenant boundary to protect). Returns the
+    visitor_profile (lead_score / interests / needs / summary — 'intent' ≈
+    interests+needs, the closest existing signal), a derived source channel (latest
+    page_views utm/referrer for the visitor), and the linked lead, if any. Each
     section is independently try/except'd → a missing profile/lead/source yields an empty
     section, never a 500."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
     conv = query_db("SELECT id, visitor_id FROM chat_conversations WHERE id=%s", (conv_id,), fetchone=True)
     if not conv:
         return jsonify({"error": "Conversation not found"}), 404
@@ -155,7 +154,13 @@ def admin_conversation_context(conv_id):
     return jsonify({"ok": True, "visitor_id": vid, "profile": profile, "source": source, "lead": lead})
 
 
-# ---- 095 §2.4 human takeover (super-admin only; MUTATING) -------------------
+# ---- 095 §2.4 human takeover (any logged-in admin; MUTATING) ----------------
+# Available to any admin who can open the Chat History inbox (the tab is shown
+# to clients via the `chat_history` feature, so the actions inside it must be
+# usable by the same audience — replying is the core action of an inbox). The
+# visitor context panel above shares this same admin audience. Conversations are
+# not tenant-scoped (single-tenant template), so there is no cross-tenant boundary
+# to protect here.
 # Pausing the AI for a conversation is stored in conversation_takeover. The live
 # /api/chat SSE generator reads ai_paused at the top of generate() and, if set,
 # records the visitor's message + skips the LLM (see app._persist_visitor_user_message
@@ -183,10 +188,7 @@ def _takeover_upsert(conv_id, ai_paused, who):
 @reporting_bp.route("/admin/api/conversations/<int:conv_id>/takeover", methods=["POST"])
 @admin_required
 def admin_conversation_takeover(conv_id):
-    """Pause the AI for a conversation (human takeover). Super-admin only."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
+    """Pause the AI for a conversation (human takeover). Any logged-in admin."""
     conv = query_db("SELECT id FROM chat_conversations WHERE id=%s", (conv_id,), fetchone=True)
     if not conv:
         return jsonify({"error": "Conversation not found"}), 404
@@ -201,10 +203,7 @@ def admin_conversation_takeover(conv_id):
 @reporting_bp.route("/admin/api/conversations/<int:conv_id>/release", methods=["POST"])
 @admin_required
 def admin_conversation_release(conv_id):
-    """Resume the AI for a conversation (release the human takeover). Super-admin only."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
+    """Resume the AI for a conversation (release the human takeover). Any logged-in admin."""
     conv = query_db("SELECT id FROM chat_conversations WHERE id=%s", (conv_id,), fetchone=True)
     if not conv:
         return jsonify({"error": "Conversation not found"}), 404
@@ -222,15 +221,12 @@ def admin_conversation_message(conv_id):
     """Send a human reply into a conversation. Inserts a chat_messages row with
     role='agent_human' and, as a side effect, PAUSES the AI (a human is now
     handling the thread, so the AI must not also reply). The visitor receives it
-    via the public agent-messages poll (P3). Super-admin only.
+    via the public agent-messages poll (P3). Any logged-in admin.
 
     SECURITY: the content is operator-authored but is treated as untrusted on the
     way OUT to the visitor — the public widget renders agent_human messages as
     TEXT (textContent), never HTML, so an operator can't inject script into a
     visitor's page. We also bound the length."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
     conv = query_db("SELECT id FROM chat_conversations WHERE id=%s", (conv_id,), fetchone=True)
     if not conv:
         return jsonify({"error": "Conversation not found"}), 404

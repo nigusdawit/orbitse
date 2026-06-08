@@ -101,6 +101,32 @@ def test_takeover_release_routes():
         app.execute_db("DELETE FROM chat_conversations WHERE id=%s", (cid,))
 
 
+def test_client_admin_can_takeover_release_and_reply():
+    """Regression: a non-super-admin (CLIENT) who can see the Chat History inbox
+    must be able to pause/resume the AI and send a human reply. These actions are
+    `@admin_required` only (not super-admin) — replying is the core action of the
+    inbox, which is itself client-visible via the `chat_history` feature. Only
+    meaningful when CLIENT_PASSWORD is configured (mirrors the context test)."""
+    if not CLIENT_PW:
+        return
+    cc = app.app.test_client()
+    cc.post("/admin/login", data={"password": CLIENT_PW})
+    with cc.session_transaction() as s:
+        s["_csrf_token"] = "t"
+    conv = app.execute_db("INSERT INTO chat_conversations (session_id, visitor_id) VALUES (%s,%s) RETURNING id",
+                          ("ci-sess-cl", "ci-vid-cl"))
+    cid = conv["id"]
+    try:
+        r = cc.post("/admin/api/conversations/%d/takeover" % cid, headers=_CSRF)
+        assert r.status_code == 200 and r.get_json()["ai_paused"] is True
+        r = cc.post("/admin/api/conversations/%d/message" % cid, json={"content": "Human here."}, headers=_CSRF)
+        assert r.status_code == 200 and r.get_json()["ok"] is True
+        r = cc.post("/admin/api/conversations/%d/release" % cid, headers=_CSRF)
+        assert r.status_code == 200 and r.get_json()["ai_paused"] is False
+    finally:
+        app.execute_db("DELETE FROM chat_conversations WHERE id=%s", (cid,))
+
+
 def test_human_message_inserts_agent_human_and_pauses():
     c = _sa()
     conv = app.execute_db("INSERT INTO chat_conversations (session_id, visitor_id) VALUES (%s,%s) RETURNING id",

@@ -821,6 +821,7 @@ _FEATURE_ROUTE_PREFIXES = [
     ("/admin/api/analytics",       "analytics"),
     ("/admin/api/automations",     "automations"),
     ("/admin/api/chat-history",    "chat_history"),
+    ("/admin/api/conversations",   "chat_history"),   # inbox: context/takeover/release/message
     ("/admin/api/forms",           "custom_forms"),
     ("/admin/api/generated-pages", "generated_pages"),
     ("/admin/api/mcp/",            "mcp"),

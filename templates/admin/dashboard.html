@@ -414,9 +414,10 @@ TO CUSTOMIZE THIS DASHBOARD:
     </button>
     {% endif %}
     {% if is_super_admin() or feature_visible('chat_history') %}
-    <button class="tab-btn" onclick="switchTab('chat-history', this)" data-testid="tab-chat-history">
+    <button class="tab-btn" onclick="switchTab('chat-history', this); inboxOnView();" data-testid="tab-chat-history">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
       Chat History
+      <span class="nav-badge" id="chat-history-badge" title="Conversations where a visitor is waiting on a human reply (AI paused)" hidden>0</span>
     </button>
     {% endif %}
     {% if is_super_admin() or feature_visible('knowledge_cache') %}

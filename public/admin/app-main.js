@@ -2173,6 +2173,91 @@
        last_message_at — see reporting.admin_chat_history). */
     let _inboxActiveConv = null;     // currently-open conversation id (re-highlight on refresh)
     let _inboxConvs = [];            // last-loaded conversation rows (for ai_paused lookup)
+    let _inboxRenderedIds = new Set(); // message ids already painted in the open transcript (live append dedupe)
+    let _inboxPollTimer = null;      // live auto-refresh handle (thread list + open transcript)
+    // --- "needs a human reply" alert bookkeeping (sidebar badge + title flash) ---
+    let _inboxSeenSigs = null;       // signatures the operator has already seen (null = no baseline yet)
+    let _inboxLastSigs = new Set();  // signatures from the most recent poll (for inboxOnView)
+    let _inboxFlashTimer = null;     // title-flash interval handle (null = not flashing)
+    let _inboxOrigTitle = null;      // page title to restore once the flash stops
+
+    // A conversation "needs a human reply" when the AI auto-reply is paused AND the
+    // visitor sent the last turn — nothing is answering them automatically. The
+    // signature folds in last_message_at so a fresh visitor message in an already-
+    // waiting conversation also reads as "new".
+    function _inboxNeedsReply(convs) {
+      return (convs || []).filter(c => c && c.ai_paused && c.last_role === 'user');
+    }
+    function _inboxSig(c) { return c.id + ':' + (c.last_message_at || c.started_at || ''); }
+
+    function _inboxSetNavBadge(n) {
+      const b = document.getElementById('chat-history-badge');
+      if (!b) return;
+      if (n > 0) { b.textContent = String(n); b.hidden = false; } else { b.hidden = true; }
+    }
+
+    // Blink the browser tab title so an operator working in another tab notices a
+    // visitor is waiting. Idempotent — guarded so it only ever installs one timer.
+    function _inboxStartFlash(n) {
+      if (_inboxOrigTitle == null) _inboxOrigTitle = document.title;
+      if (_inboxFlashTimer) return;
+      let on = false;
+      _inboxFlashTimer = setInterval(() => {
+        on = !on;
+        document.title = on ? `(${n}) Reply needed — ${_inboxOrigTitle}` : _inboxOrigTitle;
+      }, 1000);
+    }
+    function _inboxStopFlash() {
+      if (_inboxFlashTimer) { clearInterval(_inboxFlashTimer); _inboxFlashTimer = null; }
+      if (_inboxOrigTitle != null) { document.title = _inboxOrigTitle; }
+    }
+
+    // Update the sidebar badge + (off-tab) title flash from a fresh conversation
+    // list. Called by both the full inbox refresh and the lightweight badge poll.
+    function _inboxUpdateAlerts(convs) {
+      const needing = _inboxNeedsReply(convs);
+      const n = needing.length;
+      _inboxSetNavBadge(n);
+
+      const sigs = new Set(needing.map(_inboxSig));
+      _inboxLastSigs = sigs;
+
+      const tab = document.getElementById('tab-chat-history');
+      const viewing = !!(tab && tab.classList.contains('active')) && !document.hidden;
+      if (viewing) {
+        // Operator is looking at the inbox — everything counts as seen, no flashing.
+        _inboxSeenSigs = sigs;
+        _inboxStopFlash();
+        return;
+      }
+      if (_inboxSeenSigs == null) {
+        _inboxSeenSigs = sigs;   // first poll — establish a baseline, don't flash on load
+        return;
+      }
+      let isNew = false;
+      sigs.forEach(s => { if (!_inboxSeenSigs.has(s)) isNew = true; });
+      if (isNew && n > 0) _inboxStartFlash(n);
+      else if (n === 0) _inboxStopFlash();
+    }
+
+    // Called when the operator opens the Chat History tab — clears the title flash
+    // and marks the current waiting conversations as seen. The badge stays (it is a
+    // live count of who is still waiting, not an unread marker).
+    function inboxOnView() {
+      _inboxStopFlash();
+      _inboxSeenSigs = new Set(_inboxLastSigs);
+    }
+
+    // Lightweight off-tab refresh: pull just enough to keep the sidebar badge +
+    // title flash current while the operator is on another tab. Fail-open.
+    async function _inboxRefreshBadge() {
+      try {
+        const res = await fetch('/admin/api/chat-history', { credentials: 'same-origin' });
+        if (!res.ok) return;
+        const data = await res.json();
+        _inboxUpdateAlerts(data.conversations || []);
+      } catch (_) { /* fail-open: leave the badge as-is */ }
+    }
 
     async function loadChatHistory() {
       try {
@@ -2189,6 +2274,7 @@
         if (!list) return;
         const convs = data.conversations || [];
         _inboxConvs = convs;   // cache for ai_paused lookups (composer state)
+        _inboxUpdateAlerts(convs);   // sidebar needs-reply badge + title flash
 
         if (!convs.length) {
           list.innerHTML = '<div class="empty-state" style="padding:1rem;">No conversations yet. They appear here once visitors use the chatbot.</div>';
@@ -2254,6 +2340,23 @@
       </div>`;
     }
 
+    // Render ONE transcript bubble. Shared by the initial paint (openConversation),
+    // the live append (_inboxRefreshTranscript), and the optimistic human-send so
+    // every path produces identical markup. Content is always escaped (esc) — a
+    // visitor/human message is never trusted as HTML. The data-msg id lets the live
+    // poll dedupe (skip bubbles already on screen).
+    function _inboxMsgHtml(m) {
+      const roleClass = m.role === 'agent_human' ? 'gxi-msg-human'
+        : (m.role === 'user' ? 'gxi-msg-user' : 'gxi-msg-assistant');
+      const roleLabel = m.role === 'agent_human' ? 'Human' : m.role;
+      const idAttr = (m.id != null) ? ` data-msg="${esc(String(m.id))}"` : '';
+      return `<div class="gxi-msg ${roleClass}"${idAttr}>
+        <div class="gxi-msg-role">${esc(roleLabel)}</div>
+        <div class="gxi-msg-body">${esc(m.content)}</div>
+        ${m.role === 'assistant' ? _renderInboxToolCalls(m.tool_calls_json) : ''}
+      </div>`;
+    }
+
     // Open a conversation into the centre transcript pane + load its context panel.
     // (Renamed from viewConversation; the old name is kept as an alias below.)
     async function openConversation(convId) {
@@ -2277,17 +2380,12 @@
         }
         const msgs = data.messages || [];
         if (tEl) {
+          // Reset the live-append dedupe set, then paint every message and record
+          // its id so the live poll only appends turns added AFTER this paint.
+          _inboxRenderedIds = new Set();
           tEl.innerHTML = msgs.map(m => {
-            // agent_human = a human takeover reply (P2). Style it distinctly so the
-            // operator can tell apart AI vs human turns in the transcript.
-            const roleClass = m.role === 'agent_human' ? 'gxi-msg-human'
-              : (m.role === 'user' ? 'gxi-msg-user' : 'gxi-msg-assistant');
-            const roleLabel = m.role === 'agent_human' ? 'Human' : m.role;
-            return `<div class="gxi-msg ${roleClass}">
-              <div class="gxi-msg-role">${esc(roleLabel)}</div>
-              <div class="gxi-msg-body">${esc(m.content)}</div>
-              ${m.role === 'assistant' ? _renderInboxToolCalls(m.tool_calls_json) : ''}
-            </div>`;
+            if (m.id != null) _inboxRenderedIds.add(m.id);
+            return _inboxMsgHtml(m);
           }).join('') || '<div class="empty-state gxi-placeholder">No messages.</div>';
           tEl.scrollTop = tEl.scrollHeight;
         }
@@ -2305,8 +2403,9 @@
     const viewConversation = openConversation;
 
     // Fetch + render the RIGHT context panel for a conversation (lead score, detected
-    // intent, traffic source, linked CRM contact). Super-admin only on the server —
-    // a 403 simply shows a muted note rather than erroring. Fail-open throughout.
+    // intent, traffic source, linked CRM contact). Available to any logged-in admin —
+    // a 403 (defensive only) simply shows a muted note rather than erroring.
+    // Fail-open throughout.
     async function loadConversationContext(convId) {
       const el = document.getElementById('inbox-context');
       if (!el) return;
@@ -2315,7 +2414,7 @@
         const res = await fetch(`/admin/api/conversations/${convId}/context`, { credentials: 'same-origin' });
         if (_inboxActiveConv !== convId) return;   // stale — a newer conversation was opened mid-fetch
         if (res.status === 403) {
-          el.innerHTML = '<div class="gxi-ctx-muted" style="padding:.5rem;">Visitor context is super-admin only.</div>';
+          el.innerHTML = '<div class="gxi-ctx-muted" style="padding:.5rem;">Visitor context is unavailable.</div>';
           return;
         }
         const d = await res.json();
@@ -2402,14 +2501,18 @@
         // Sending implies takeover server-side; reflect it locally.
         const conv = _inboxConvs.find(c => c.id === _inboxActiveConv);
         if (conv) conv.ai_paused = true;
-        // Optimistically append the human bubble (textContent — never HTML).
+        // Optimistically append the human bubble. We record the server id in the
+        // dedupe set (and tag the bubble) so the live poll won't paint it twice.
+        // Guard against the race where a poll already appended this same id while
+        // the POST was in flight (skip both the set check and an on-screen check).
         const tEl = document.getElementById('inbox-transcript');
-        if (tEl) {
-          const div = document.createElement('div');
-          div.className = 'gxi-msg gxi-msg-human';
-          div.innerHTML = '<div class="gxi-msg-role">Human</div><div class="gxi-msg-body"></div>';
-          div.querySelector('.gxi-msg-body').textContent = content;
-          tEl.appendChild(div);
+        const already = d.id != null
+          && (_inboxRenderedIds.has(d.id) || (tEl && tEl.querySelector(`[data-msg="${esc(String(d.id))}"]`)));
+        if (tEl && !already) {
+          const ph = tEl.querySelector('.gxi-placeholder');
+          if (ph) tEl.innerHTML = '';
+          if (d.id != null) _inboxRenderedIds.add(d.id);
+          tEl.insertAdjacentHTML('beforeend', _inboxMsgHtml({ id: d.id, role: 'agent_human', content }));
           tEl.scrollTop = tEl.scrollHeight;
         }
         _inboxSyncComposer();
@@ -2419,6 +2522,58 @@
       } finally {
         if (btn) btn.disabled = false;
       }
+    }
+
+    // Live transcript refresh: re-pull the open conversation and APPEND only the
+    // messages we haven't painted yet (visitor replies that arrive while the AI is
+    // paused, AI turns, etc.). This is what makes a visitor's response show up in
+    // the inbox without a manual reload. We never re-render the whole transcript —
+    // we only insert new bubbles — so the operator's scroll position and any
+    // in-flight text selection survive. Fail-open: on any error we keep what's
+    // already on screen.
+    async function _inboxRefreshTranscript(convId) {
+      const tEl = document.getElementById('inbox-transcript');
+      if (!tEl) return;
+      try {
+        const res = await fetch(`/admin/api/chat-history/${convId}`, { credentials: 'same-origin' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (_inboxActiveConv !== convId) return;   // operator switched conversations mid-fetch
+        const fresh = (data.messages || []).filter(m => m.id != null && !_inboxRenderedIds.has(m.id));
+        if (!fresh.length) return;
+        // Only auto-scroll to the newest message if the operator was already at the
+        // bottom; if they scrolled up to read history, leave them where they are.
+        const nearBottom = (tEl.scrollHeight - tEl.scrollTop - tEl.clientHeight) < 80;
+        const ph = tEl.querySelector('.gxi-placeholder');
+        if (ph) tEl.innerHTML = '';
+        fresh.forEach(m => {
+          _inboxRenderedIds.add(m.id);
+          tEl.insertAdjacentHTML('beforeend', _inboxMsgHtml(m));
+        });
+        if (nearBottom) tEl.scrollTop = tEl.scrollHeight;
+      } catch (_) { /* fail-open: keep the existing transcript */ }
+    }
+
+    // Live auto-refresh for the whole inbox: every few seconds (only while the
+    // Chat History tab is on-screen and the page is visible) re-pull the thread
+    // list + stats and append any new turns to the open conversation. Cheap and
+    // idempotent — guarded so it only ever installs one timer.
+    function inboxStartPolling() {
+      if (_inboxPollTimer) return;
+      _inboxPollTimer = setInterval(async () => {
+        const tab = document.getElementById('tab-chat-history');
+        const viewing = !!(tab && tab.classList.contains('active')) && !document.hidden;
+        if (viewing) {
+          await loadChatHistory();      // refresh list, stats, live dots + AI-paused chips
+          _inboxSyncComposer();         // keep the Pause/Resume label in sync with fresh data
+          if (_inboxActiveConv != null) _inboxRefreshTranscript(_inboxActiveConv);
+        } else {
+          // Operator is on another tab (or the browser tab is in the background) —
+          // keep the sidebar needs-reply badge + title flash alive with a cheap,
+          // badge-only refresh so a waiting visitor never goes unnoticed.
+          await _inboxRefreshBadge();
+        }
+      }, 6000);
     }
 
 
@@ -6692,6 +6847,7 @@
       loadFaq();
       loadChatbotSettings();
       loadChatHistory();
+      inboxStartPolling();   // live auto-refresh of the inbox (thread list + open transcript)
       loadForms();
       // Brand identity (Task #61): font pairs FIRST so the curated-pair
       // <option> list is populated before loadTheme() tries to set the
