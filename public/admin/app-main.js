@@ -639,6 +639,52 @@
         }).join('');
       }catch(e){ wrap.innerHTML='<div class="gx-empty" style="color:var(--admin-danger);">Could not load drafts.</div>'; }
     }
+    // task 101 (gap §5.3) — content kanban. A board view over the REAL content_assets
+    // statuses (the mock's Ideas/Scheduled stages don't exist, so we don't fake them).
+    // Frontend-only: reuses /admin/api/content/drafts + the existing status-change POST.
+    var _csView = 'list';
+    var CS_BOARD_COLS = [['draft','Draft'],['approved','Approved'],['published','Published'],['rejected','Rejected']];
+    function csSetView(v){
+      _csView = v;
+      var list=document.getElementById('cs-drafts-list'), board=document.getElementById('cs-board');
+      var filt=document.getElementById('cs-filter-status');
+      var bl=document.getElementById('cs-view-list'), bb=document.getElementById('cs-view-board');
+      if(list) list.style.display = (v==='board')?'none':'';
+      if(board) board.style.display = (v==='board')?'block':'none';
+      if(filt) filt.style.display = (v==='board')?'none':'';   // board shows every status as a column
+      if(bl) bl.classList.toggle('active', v==='list');
+      if(bb) bb.classList.toggle('active', v==='board');
+      if(v==='board') csLoadBoard(); else csLoadDrafts();
+    }
+    function _csCard(d){
+      var cur=String(d.status||'').toLowerCase();
+      var moves=CS_BOARD_COLS.filter(function(c){ return c[0]!==cur; }).map(function(c){
+        return '<button class="gx-btn" style="padding:2px 6px; font-size:11px;" onclick="csBoardMove('+d.id+',\''+c[0]+'\')">→ '+c[1]+'</button>'; }).join(' ');
+      return '<div style="background:var(--admin-surface); border:1px solid var(--admin-border); border-radius:8px; padding:8px; margin-bottom:6px;">'
+        +'<div style="font-weight:600; font-size:.84rem; cursor:pointer;" onclick="csOpenDraft('+d.id+')">'+_rceEsc(d.title||('Draft #'+d.id))+'</div>'
+        +'<div style="font-size:.7rem; color:var(--admin-text-muted); margin:2px 0 6px;">'+_rceEsc(d.content_type||'')+'</div>'
+        +'<div style="display:flex; gap:4px; flex-wrap:wrap;">'+moves+'</div></div>';
+    }
+    async function csLoadBoard(){
+      var board=document.getElementById('cs-board'); if(!board) return;
+      board.innerHTML='<div class="gx-empty">Loading…</div>';
+      try{
+        var j=await _rceGet('/admin/api/content/drafts');
+        var ds=j.drafts||[]; var by={}; CS_BOARD_COLS.forEach(function(c){ by[c[0]]=[]; });
+        ds.forEach(function(d){ var s=String(d.status||'draft').toLowerCase(); (by[s]||by['draft']).push(d); });
+        board.innerHTML='<div style="display:flex; gap:12px; align-items:flex-start; overflow-x:auto;">'
+          + CS_BOARD_COLS.map(function(col){ var items=by[col[0]]||[];
+              return '<div style="flex:1; min-width:200px; background:var(--admin-surface-hover,rgba(255,255,255,.03)); border:1px solid var(--admin-border); border-radius:10px; padding:8px;">'
+                +'<div style="font-weight:700; font-size:.75rem; text-transform:uppercase; letter-spacing:.04em; color:var(--admin-text-muted); margin-bottom:6px;">'+col[1]+' ('+items.length+')</div>'
+                +(items.length? items.map(_csCard).join('') : '<div class="gx-empty" style="padding:.4rem;">—</div>')
+                +'</div>'; }).join('')
+          +'</div>';
+      }catch(e){ board.innerHTML='<div class="gx-empty" style="color:var(--admin-danger);">Could not load board.</div>'; }
+    }
+    async function csBoardMove(id, status){
+      var r=await _rcePost('/admin/api/content/drafts/'+id, {status:status});
+      if(r && r.ok) csLoadBoard();
+    }
     async function csGenerate(){
       const rid=(document.getElementById('cs-gen-report').value||'').trim();
       const st=document.getElementById('cs-gen-status');

@@ -40,8 +40,15 @@
         <option value="rejected">Rejected</option>
         <option value="published">Published</option>
       </select>
+      <span style="flex:1;"></span>
+      {# task 101 (gap §5.3) — List / Board (kanban) toggle. #}
+      <div class="gx-subtabs" role="tablist" style="margin:0;">
+        <button id="cs-view-list" class="gx-subtab active" onclick="csSetView('list')" data-testid="cs-view-list">List</button>
+        <button id="cs-view-board" class="gx-subtab" onclick="csSetView('board')" data-testid="cs-view-board">Board</button>
+      </div>
     </div>
     <div id="cs-drafts-list" class="gx-list"></div>
+    <div id="cs-board" style="display:none;"></div>
     <div id="cs-draft-detail" class="gx-detail" style="display:none; margin-top:1rem;"></div>
 
     <div style="display:flex; gap:.8rem; align-items:center; margin:1.75rem 0 .75rem;">
