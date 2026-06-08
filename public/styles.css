@@ -4352,11 +4352,14 @@ body.theme-accent-gradient .section-divider {
   align-items: center;
   gap: 0.625rem;
   padding: 0.5rem 0.625rem 0.5rem 0.75rem;
-  background: rgba(255, 255, 255, 0.1);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(201, 169, 110, 0.25);
-  border-radius: 9999px;
+  /* Look is admin-themeable via CSS vars set by applyChatbotTheme(); each
+     falls back to the original built-in values so an empty theme is a no-op. */
+  background: var(--chatbot-surface-bg, rgba(255, 255, 255, 0.1));
+  color: var(--chatbot-text, #fff);
+  backdrop-filter: blur(var(--chatbot-blur, 16px));
+  -webkit-backdrop-filter: blur(var(--chatbot-blur, 16px));
+  border: 1px solid var(--chatbot-surface-border, rgba(201, 169, 110, 0.25));
+  border-radius: var(--chatbot-radius, 9999px);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
   transition: border-color var(--transition-fast), background var(--transition-fast);
   /* Admin-controllable chat-pill size. --chat-pill-scale is injected by
@@ -4417,13 +4420,13 @@ body.theme-accent-gradient .section-divider {
 .chatbot-agent-name {
   font-size: 0.8125rem;
   font-weight: 600;
-  color: #fff;
+  color: var(--chatbot-text, #fff);
   line-height: 1.2;
 }
 
 .chatbot-agent-role {
   font-size: 0.625rem;
-  color: rgba(255, 255, 255, 0.45);
+  color: color-mix(in srgb, var(--chatbot-text, #fff) 50%, transparent);
   text-transform: uppercase;
   letter-spacing: 0.1em;
   line-height: 1.2;
@@ -4437,7 +4440,7 @@ body.theme-accent-gradient .section-divider {
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 9999px;
-  color: #fff;
+  color: var(--chatbot-text, #fff);
   font-size: 0.8125rem;
   font-family: inherit;
   outline: none;
@@ -4445,7 +4448,7 @@ body.theme-accent-gradient .section-divider {
 }
 
 .chatbot-bar-input::placeholder {
-  color: rgba(255, 255, 255, 0.35);
+  color: color-mix(in srgb, var(--chatbot-text, #fff) 38%, transparent);
 }
 
 .chatbot-bar-input:focus {
@@ -4556,10 +4559,12 @@ body.theme-accent-gradient .section-divider {
   right: 0;
   height: 0;
   max-height: 70vh;
-  background: rgba(255, 255, 255, 0.06);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  /* Themed surface (see applyChatbotTheme) with the original glass as fallback. */
+  background: var(--chatbot-surface-bg, rgba(255, 255, 255, 0.06));
+  color: var(--chatbot-text, #fff);
+  backdrop-filter: blur(var(--chatbot-blur, 24px));
+  -webkit-backdrop-filter: blur(var(--chatbot-blur, 24px));
+  border: 1px solid var(--chatbot-surface-border, rgba(255, 255, 255, 0.1));
   border-radius: 1rem;
   box-shadow: 0 -8px 40px rgba(0, 0, 0, 0.5);
   display: flex;
@@ -5101,7 +5106,7 @@ body.theme-accent-gradient .section-divider {
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 9999px;
-  color: #fff;
+  color: var(--chatbot-text, #fff);
   font-size: 0.8125rem;
   font-family: inherit;
   outline: none;
@@ -5109,7 +5114,7 @@ body.theme-accent-gradient .section-divider {
 }
 
 .chatbot-panel-input::placeholder {
-  color: rgba(255, 255, 255, 0.35);
+  color: color-mix(in srgb, var(--chatbot-text, #fff) 38%, transparent);
 }
 
 .chatbot-panel-input:focus {
@@ -7785,7 +7790,20 @@ html.aap-widget #site-footer {
 html.aap-widget #chatbot-bar,
 html.aap-widget #chatbot-panel,
 html.aap-widget #side-chat-panel {
-  background: rgb(var(--color-bg-rgb, 6 11 20) / 0.96) !important;
+  /* Honor the admin theme color, but use the near-solid variant: over an
+     arbitrary (often light) host page a translucent surface would wash out, so
+     widget mode always uses ~0.96 opacity. Falls back to the theme base color
+     when no theme is set. */
+  background: var(--chatbot-surface-bg-solid, rgb(var(--color-bg-rgb, 6 11 20) / 0.96)) !important;
+}
+
+/* The chat pill carries a big soft drop-shadow (0 8px 32px) that reads as a
+   grey halo around the pill when it floats over a LIGHT host page (on the dark
+   main site it blends into the background). In widget mode the iframe is
+   transparent, so kill that halo — only the pill itself should be visible, with
+   nothing bleeding into the host page around it. */
+html.aap-widget #chatbot-bar {
+  box-shadow: none !important;
 }
 
 /* The expanded chat panel is capped at 70vh on the main site. Inside the widget

@@ -5854,10 +5854,58 @@ async function initChatbot() {
  * - Quick prompt chips
  * - Event listeners for input fields
  */
+/* Apply the admin-configured chat-widget theme by setting CSS variables on the
+   document root. Every key is optional and falls back to the built-in look, so
+   an empty theme ({}) changes nothing. Keeps the styling in CSS — this only
+   computes the variable values from the saved theme object. */
+function applyChatbotTheme(theme) {
+  theme = theme || {};
+  const root = document.documentElement;
+
+  /* Pill shape -> bar border-radius. */
+  const shapeRadius = { pill: '9999px', rounded: '1.25rem', square: '0.5rem' };
+  root.style.setProperty('--chatbot-radius', shapeRadius[theme.shape] || '9999px');
+
+  /* Glassmorphic blur on/off (default ON). */
+  const glassOn = theme.glass !== false;
+  root.style.setProperty('--chatbot-blur', glassOn ? '16px' : '0px');
+
+  /* Frost contrast base: light -> dark text, dark -> light text. */
+  const lightMode = theme.glass_mode === 'light';
+
+  /* Surface color = custom tint when set, else the frost base. */
+  function hexToRgb(hex) {
+    const m = /^#?([0-9a-f]{6})$/i.exec((hex || '').trim());
+    if (!m) return null;
+    const n = parseInt(m[1], 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+  const baseRgb = hexToRgb(theme.tint) || (lightMode ? [255, 255, 255] : [12, 18, 32]);
+  const rgb = baseRgb.join(', ');
+
+  /* Translucent surface for the main site (lets the glass show through) plus a
+     near-solid variant for widget mode, where the iframe floats over an
+     arbitrary host and needs enough opacity to stay readable. */
+  const alpha = glassOn ? 0.55 : 0.96;
+  root.style.setProperty('--chatbot-surface-bg', 'rgba(' + rgb + ', ' + alpha + ')');
+  root.style.setProperty('--chatbot-surface-bg-solid', 'rgba(' + rgb + ', 0.96)');
+
+  /* Hairline border tuned to the frost base for definition. */
+  root.style.setProperty('--chatbot-surface-border',
+    lightMode ? 'rgba(0, 0, 0, 0.12)' : 'rgba(255, 255, 255, 0.18)');
+
+  /* Text color: custom when set, else high-contrast for the chosen frost. */
+  root.style.setProperty('--chatbot-text',
+    theme.text_color || (lightMode ? '#1a1f2b' : '#ffffff'));
+}
+
 function setupBuiltinChat() {
   /* Show the chatbot container */
   const container = document.getElementById('chatbot-container');
   if (container) container.style.display = '';
+
+  /* Apply the saved chat-widget theme (shape, glass, colors). */
+  applyChatbotTheme(chatSettings.theme);
 
   /* Update agent avatar across all locations.
      If agent_avatar is a URL or path (starts with / or http), show it as an image.
@@ -9500,8 +9548,36 @@ function openImmersivePageStreaming() {
   frame.srcdoc = buildImmersivePageDoc(initialBody, state.token);
   overlay.classList.add('active');
 
+  /* Last-resort watchdog: the parse-success and cut-off paths both tear the
+     stream down (and clear this timer via resetImmersiveStreamState), but if
+     the response NEVER reports completion at all — a hung/dropped connection
+     mid-build — nothing else fires and the "Building" pulse would spin forever.
+     This is an INACTIVITY timer, not an absolute deadline: it is re-armed on
+     every streamed chunk (see appendImmersivePageStreaming), so a legitimately
+     long build that keeps producing output is never interrupted. It only fires
+     after a full stall window with no new content, at which point we close the
+     overlay so the visitor is returned to the site instead of staring at
+     "Building". The saved page (if any) is still reachable from the bottom-left
+     "recent pages" bubble. */
+  _armImmersiveWatchdog(state);
+
   _immersiveStream = state;
   return _immersiveStream;
+}
+
+/* (Re-)arm the inactivity watchdog for a streaming state. Clears any previous
+   timer first, so calling this on each chunk keeps the deadline 60s in the
+   future as long as content keeps flowing. */
+function _armImmersiveWatchdog(state) {
+  if (!state) return;
+  if (state._watchdog) clearTimeout(state._watchdog);
+  state._watchdog = setTimeout(() => {
+    if (_immersiveStream === state && state.isStreaming) {
+      closeImmersivePage();
+      resetImmersiveStreamState();
+      chatAddMessage('agent', "That page took too long to build. Could you ask me to try again?");
+    }
+  }, 60000);
 }
 
 function _flushImmersiveStream() {
@@ -9523,6 +9599,9 @@ function appendImmersivePageStreaming(deltaHtml) {
   if (!_immersiveStream || !deltaHtml) return;
   _immersiveStream.queue.push({ type: 'append', html: deltaHtml });
   _immersiveStream.written += deltaHtml.length;
+  /* Content is still flowing — push the inactivity watchdog deadline forward so
+     a long-but-healthy build is never closed out from under the visitor. */
+  _armImmersiveWatchdog(_immersiveStream);
   _flushImmersiveStream();
 }
 
@@ -9575,6 +9654,9 @@ function resetImmersiveStreamState() {
     }
     if (_immersiveStream._resetTimer) {
       clearTimeout(_immersiveStream._resetTimer);
+    }
+    if (_immersiveStream._watchdog) {
+      clearTimeout(_immersiveStream._watchdog);
     }
   }
   _immersiveStream = null;

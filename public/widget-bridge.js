@@ -47,7 +47,12 @@
   // hug whichever of these are currently visible. All of them are bottom-anchored
   // (position:fixed; bottom:…), so the band height is the distance from the
   // highest visible surface's top edge down to the bottom of the viewport.
-  var FLOAT_IDS = ["chatbot-container", "chatbot-panel", "voice-intro-card", "side-chat-panel"];
+  // Includes the bottom-left "saved pages" bubble + its popover so the band
+  // grows to show them (otherwise the popover opens above the iframe top edge
+  // and is clipped). The bar-thinking dots live INSIDE #chatbot-container so
+  // they are already covered by it.
+  var FLOAT_IDS = ["chatbot-container", "chatbot-panel", "voice-intro-card",
+                   "side-chat-panel", "page-archive-bubble", "page-archive-popover"];
 
   function post(data) {
     data.__aap = MSG;

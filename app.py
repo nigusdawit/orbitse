@@ -8138,7 +8138,7 @@ def _render_app_shell_response(page=None, section_ids=None, initial_section_dom_
         # href="/styles.css"> snapshot — also get the fresh marker. Bump
         # _STYLES_CSS_VERSION whenever public/styles.css ships a visible
         # change that needs to invalidate cached copies.
-        _STYLES_CSS_VERSION = "20260608d"
+        _STYLES_CSS_VERSION = "20260608e"
         html_content = re.sub(
             r'href="/styles\.css(?:\?[^"]*)?"',
             f'href="/styles.css?v={_STYLES_CSS_VERSION}"',
@@ -27259,6 +27259,7 @@ def admin_update_chatbot():
              api_endpoint = %s, embed_code = %s, system_prompt = %s,
              brand_voice = %s,
              agent_scope_tightness = %s,
+             theme = %s::jsonb,
              updated_at = NOW()
            WHERE id = 1 RETURNING *""",
         (
@@ -27274,6 +27275,10 @@ def admin_update_chatbot():
             _system_prompt_value,
             _brand_voice_value,
             scope_in,
+            # Visual theme for the public chat widget (JSONB). Stored as-is;
+            # the public side reads it with per-key fallbacks, so an empty {}
+            # means "use the built-in look".
+            json.dumps(data.get("theme") or {}),
         )
     )
     # Bump the cache content_version when the system_prompt OR brand_voice

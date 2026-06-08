@@ -27,3 +27,8 @@ create a new Alembic migration (`migrations/versions/NNNN_*.py`) with the same
 (merge-revision if there are parallel branches — e.g. `0006_merge_rag_heads`
 merged two `0005_` heads). Run `python -m alembic upgrade head` to apply, then
 verify with `SELECT to_regclass('public.<table>')`.
+
+**Tooling gotcha:** run `alembic ...` (or `python -m alembic ...`) directly, **not**
+`uv run alembic ...`. In this Replit env `uv run` tries to write to the read-only
+nix store and fails with a permission error before alembic ever runs. The boot
+path uses `_run_alembic_upgrade()` which already calls alembic directly.
