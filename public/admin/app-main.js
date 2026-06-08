@@ -2616,6 +2616,18 @@
           fmt(s.lifetime_tts_chars_saved);
         document.getElementById('kc-stat-version').textContent =
           'v' + (s.content_version || 1);
+        // task 098 (gap §3.7): Knowledge KPIs — Documents + Chunks indexed from the
+        // KB document list. Own try (fail-open) so a KB hiccup never blanks the
+        // cache stats above.
+        try {
+          const kb = await (await fetch('/admin/api/kb/list')).json();
+          const docs = (kb && kb.documents) || [];
+          const chunks = docs.reduce((a, d) => a + (parseInt(d.chunk_count, 10) || 0), 0);
+          const dEl = document.getElementById('kc-stat-docs');
+          const cEl = document.getElementById('kc-stat-chunks');
+          if (dEl) dEl.textContent = fmt(docs.length);
+          if (cEl) cEl.textContent = fmt(chunks);
+        } catch (_) { /* fail-open */ }
       } catch (err) {
         console.warn('[knowledge-cache] stats failed', err);
       }
