@@ -46,7 +46,7 @@ def test_chat_history_has_additive_columns():
         app.execute_db("DELETE FROM chat_conversations WHERE id=%s", (cid,))
 
 
-def test_context_endpoint_shape_and_super_gate():
+def test_context_endpoint_shape_and_admin_access():
     c = _sa()
     conv = app.execute_db("INSERT INTO chat_conversations (session_id, visitor_id) VALUES (%s, %s) RETURNING id",
                           ("ci-sess-ctx", "ci-vid-ctx"))
@@ -64,11 +64,14 @@ def test_context_endpoint_shape_and_super_gate():
         assert "UTM: google" in j["source"]
         assert j["lead"] and j["lead"]["name"] == "Ctx Lead"
         if CLIENT_PW:
+            # The inbox visitor-context panel was relaxed from super-admin-only to
+            # ANY logged-in admin (team change, kept by the owner) — a client-role
+            # admin now gets 200 (was 403 under the original task/095 gate).
             cc = app.app.test_client()
             cc.post("/admin/login", data={"password": CLIENT_PW})
             with cc.session_transaction() as s:
                 s["_csrf_token"] = "t"
-            assert cc.get("/admin/api/conversations/%d/context" % cid).status_code == 403
+            assert cc.get("/admin/api/conversations/%d/context" % cid).status_code == 200
     finally:
         app.execute_db("DELETE FROM chat_conversations WHERE id=%s", (cid,))
         app.execute_db("DELETE FROM visitor_profiles WHERE visitor_id=%s", ("ci-vid-ctx",))
