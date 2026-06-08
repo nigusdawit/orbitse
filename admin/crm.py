@@ -31,6 +31,7 @@ from core import (
     current_tenant_id,
     _vp_as_list,
     _iso_row,
+    capture_exc,
 )
 
 crm_bp = Blueprint("crm", __name__)
@@ -214,6 +215,158 @@ def admin_delete_lead(lead_id):
     if not n:
         return jsonify({"error": "Lead not found."}), 404
     return jsonify({"ok": True})
+
+
+# ===========================================================================
+# CONTACTS — unified scored PEOPLE view (task 097, gap §2.1/2.2/2.3/2.8).
+# Merges leads (each enriched with its visitor_profiles lead_score) with
+# profile-only people (scored visitors who never became a lead), deduped by
+# visitor_id, + headline KPIs. Convert flips/creates a 'won' lead ("customer").
+# Super-admin only (visitor PII); each section fail-open so a glitch never 500s
+# the list. Reuses the existing leads/profiles tables — no migration.
+# ===========================================================================
+@crm_bp.route("/admin/api/contacts", methods=["GET"])
+@admin_required
+def admin_list_contacts():
+    """Unified scored people list + KPIs. Super-admin only. ?limit=N (max 1000)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    try:
+        limit = max(1, min(int(request.args.get("limit", 500) or 500), 1000))
+    except (TypeError, ValueError):
+        limit = 500
+    tid = current_tenant_id()
+    contacts = []
+    seen_vids = set()
+    # 1) Leads, each LEFT JOINed to its visitor_profile for the lead_score.
+    try:
+        leads = query_db(
+            "SELECT l.id, l.name, l.email, l.phone, l.interest, l.source, l.status, "
+            "       l.visitor_id, l.created_at, l.updated_at, "
+            "       COALESCE(vp.lead_score, 0) AS lead_score "
+            "FROM leads l "
+            "LEFT JOIN visitor_profiles vp "
+            "  ON vp.tenant_id = l.tenant_id AND vp.visitor_id = l.visitor_id "
+            "WHERE l.tenant_id = %s "
+            "ORDER BY COALESCE(vp.lead_score,0) DESC, l.id DESC LIMIT %s",
+            (tid, limit)) or []
+        for r in leads:
+            vid = (r.get("visitor_id") or "").strip()
+            if vid:
+                seen_vids.add(vid)
+            la = r.get("updated_at") or r.get("created_at")
+            contacts.append({
+                "kind": "lead", "lead_id": r["id"], "visitor_id": vid,
+                "name": r.get("name") or "", "email": r.get("email") or "",
+                "phone": r.get("phone") or "", "interest": r.get("interest") or "",
+                "source": r.get("source") or "", "status": r.get("status") or "new",
+                "lead_score": int(r.get("lead_score") or 0),
+                "last_activity": la.isoformat() if la else None,
+                "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+            })
+    except Exception as e:
+        capture_exc(e, "admin_list_contacts.leads")
+    # 2) Profile-only people: a scored visitor with no lead yet (chase candidates).
+    try:
+        profs = query_db(
+            "SELECT id, visitor_id, interests, lead_score, summary, created_at, updated_at "
+            "FROM visitor_profiles WHERE tenant_id = %s "
+            "ORDER BY lead_score DESC, updated_at DESC LIMIT %s",
+            (tid, limit)) or []
+        for r in profs:
+            vid = (r.get("visitor_id") or "").strip()
+            if not vid or vid in seen_vids:
+                continue
+            seen_vids.add(vid)
+            ints = _vp_as_list(r.get("interests"))
+            la = r.get("updated_at") or r.get("created_at")
+            contacts.append({
+                "kind": "profile", "lead_id": None, "visitor_id": vid,
+                "name": "", "email": "", "phone": "",
+                "interest": (ints[0] if ints else ""), "source": "visitor",
+                "status": "visitor", "lead_score": int(r.get("lead_score") or 0),
+                "last_activity": la.isoformat() if la else None,
+                "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+            })
+    except Exception as e:
+        capture_exc(e, "admin_list_contacts.profiles")
+    # Merge sort: hottest first, then most-recent activity.
+    contacts.sort(key=lambda c: (c["lead_score"], c.get("last_activity") or ""), reverse=True)
+    contacts = contacts[:limit]
+    # 3) KPIs (§2.8) — each guarded, fail-open to 0.
+    stats = {"open": 0, "hot": 0, "avg_age_days": 0, "won_this_month": 0}
+    try:
+        s = query_db(
+            "SELECT "
+            " COUNT(*) FILTER (WHERE status IN ('new','contacted','qualified')) AS open_n, "
+            " ROUND(AVG(EXTRACT(EPOCH FROM (NOW()-created_at))/86400.0) "
+            "       FILTER (WHERE status IN ('new','contacted','qualified')))::int AS avg_age, "
+            " COUNT(*) FILTER (WHERE status='won' AND updated_at >= date_trunc('month', NOW())) AS won_m "
+            "FROM leads WHERE tenant_id=%s", (tid,), fetchone=True) or {}
+        stats["open"] = int(s.get("open_n") or 0)
+        stats["avg_age_days"] = int(s.get("avg_age") or 0)
+        stats["won_this_month"] = int(s.get("won_m") or 0)
+    except Exception as e:
+        capture_exc(e, "admin_list_contacts.stats")
+    try:
+        h = query_db("SELECT COUNT(*) AS n FROM visitor_profiles "
+                     "WHERE tenant_id=%s AND lead_score >= 80", (tid,), fetchone=True) or {}
+        stats["hot"] = int(h.get("n") or 0)
+    except Exception as e:
+        capture_exc(e, "admin_list_contacts.hot")
+    return jsonify({"contacts": contacts, "stats": stats})
+
+
+@crm_bp.route("/admin/api/contacts/convert", methods=["POST"])
+@admin_required
+def admin_convert_contact():
+    """One-click Convert→customer (§2.3). Body {lead_id} OR {visitor_id}. A lead_id
+    flips that lead to status='won'; a visitor_id with no lead creates a 'won' lead
+    seeded from its visitor_profile. 'Customer' == status 'won' (no new table)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    body = _json_body()
+    tid = current_tenant_id()
+    raw_lead = body.get("lead_id")
+    visitor_id = (body.get("visitor_id") or "").strip()[:100]
+    lead_id = None
+    if raw_lead not in (None, ""):
+        try:
+            lead_id = int(raw_lead)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Invalid lead_id."}), 400
+    try:
+        if lead_id is not None:
+            n = execute_db("UPDATE leads SET status='won', updated_at=NOW() WHERE id=%s AND tenant_id=%s",
+                           (lead_id, tid))
+            if not n:
+                return jsonify({"error": "Lead not found."}), 404
+            return jsonify({"ok": True, "lead_id": lead_id, "status": "won"})
+        if visitor_id:
+            existing = query_db(
+                "SELECT id FROM leads WHERE tenant_id=%s AND visitor_id=%s ORDER BY id DESC LIMIT 1",
+                (tid, visitor_id), fetchone=True)
+            if existing:
+                execute_db("UPDATE leads SET status='won', updated_at=NOW() WHERE id=%s AND tenant_id=%s",
+                           (existing["id"], tid))
+                return jsonify({"ok": True, "lead_id": existing["id"], "status": "won"})
+            prof = query_db(
+                "SELECT interests, summary FROM visitor_profiles WHERE tenant_id=%s AND visitor_id=%s",
+                (tid, visitor_id), fetchone=True) or {}
+            ints = _vp_as_list(prof.get("interests"))
+            row = execute_db(
+                "INSERT INTO leads (tenant_id, name, interest, message, source, visitor_id, status) "
+                "VALUES (%s, '', %s, %s, 'converted', %s, 'won') RETURNING id",
+                (tid, (ints[0] if ints else "")[:300], (prof.get("summary") or "")[:4000], visitor_id))
+            if not row:
+                return jsonify({"error": "Could not convert."}), 500
+            return jsonify({"ok": True, "lead_id": row["id"], "status": "won", "created": True})
+        return jsonify({"error": "Provide lead_id or visitor_id."}), 400
+    except Exception as e:
+        capture_exc(e, "admin_convert_contact")
+        return jsonify({"error": "convert_failed"}), 500
 
 
 # ---- Callbacks ----------------------------------------------------------

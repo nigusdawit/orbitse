@@ -104,6 +104,7 @@ GET /admin/api/chat/sessions/<session_id>/export
 GET /admin/api/chat/skills
 GET /admin/api/chat/subagent-runs
 GET /admin/api/chatbot-settings
+GET /admin/api/contacts
 GET /admin/api/content/assets
 GET /admin/api/content/drafts
 GET /admin/api/content/drafts/<int:did>
@@ -355,6 +356,7 @@ POST /admin/api/chat/sessions
 POST /admin/api/chat/sessions/<session_id>/branch
 POST /admin/api/chat/stream
 POST /admin/api/chat/transcribe
+POST /admin/api/contacts/convert
 POST /admin/api/content/drafts/<int:did>
 POST /admin/api/content/drafts/<int:did>/publish
 POST /admin/api/content/generate
