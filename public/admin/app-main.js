@@ -502,18 +502,21 @@
         return { tick: light ? 'rgba(25,35,58,0.66)' : 'rgba(255,255,255,0.60)',
                  grid: light ? 'rgba(20,30,60,0.10)'  : 'rgba(255,255,255,0.07)' };
       }
-      try{
-        Chart.register({ id:'adminThemeColors', beforeUpdate:function(chart){
-          var c=_cc(), sc=(chart.options && chart.options.scales) || {};
-          Object.keys(sc).forEach(function(k){ var s=sc[k]; if(!s) return;
-            s.ticks = s.ticks || {}; s.ticks.color = c.tick;
-            s.grid = s.grid || {}; if(s.grid.display !== false) s.grid.color = c.grid; });
-          var lg = chart.options && chart.options.plugins && chart.options.plugins.legend;
-          if(lg){ lg.labels = lg.labels || {}; lg.labels.color = c.tick; }
-        }});
-        Chart.defaults.color = _cc().tick;
-      }catch(e){}
+      // Theme every chart globally through Chart.defaults. Tick labels, the legend and
+      // the title read Chart.defaults.color; grid lines + axis borders read
+      // Chart.defaults.borderColor. This REPLACES an earlier 'adminThemeColors' plugin
+      // whose beforeUpdate walked + mutated each chart's RESOLVED options proxy
+      // (chart.options.scales[*].ticks/grid). In chart.js 4.x that proxy write recursed
+      // into Object.set → "Maximum call stack size exceeded", which broke EVERY chart
+      // (the Overview trend was just the first one hit). Defaults are set once here and
+      // re-applied by adminRecolorCharts() on theme toggle; any chart that doesn't
+      // hard-code colors inherits them and recolors for free — no per-chart mutation.
+      function _applyChartTheme(){
+        try{ var c=_cc(); Chart.defaults.color = c.tick; Chart.defaults.borderColor = c.grid; }catch(e){}
+      }
+      _applyChartTheme();
       window.adminRecolorCharts = function(){
+        _applyChartTheme();
         try{ Object.values(Chart.instances || {}).forEach(function(ch){ ch.update('none'); }); }catch(e){}
       };
     })();
@@ -9569,8 +9572,8 @@
       if (!canvas || typeof Chart === 'undefined') return;
       const labels = trend.map(p => p.day);
       const values = trend.map(p => p.n);
-      const tickColor = 'rgba(255,255,255,0.55)';
-      const gridColor = 'rgba(255,255,255,0.06)';
+      // Tick + grid colors are inherited from Chart.defaults (set by the theme block
+      // near the top of this file), so the chart themes itself in light + dark.
       if (__overviewTrendChart) {
         __overviewTrendChart.data.labels = labels;
         __overviewTrendChart.data.datasets[0].data = values;
@@ -9599,12 +9602,10 @@
           scales: {
             y: {
               beginAtZero: true,
-              ticks: { precision: 0, color: tickColor },
-              grid: { color: gridColor },
+              ticks: { precision: 0 },
             },
             x: {
-              ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 7, color: tickColor },
-              grid: { color: gridColor },
+              ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 7 },
             },
           },
         },
