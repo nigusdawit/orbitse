@@ -12,9 +12,15 @@ card instantly via `goToSlide` + `showGallery` + side panel), NOT `generatePage`
 **Why:** `generatePage` builds a brand-new custom page from scratch — slow and
 redundant when the content already exists as a curated gallery card. The model
 used to default to `generatePage` for these, so visitors waited ~10s for a page
-that just duplicated an existing card. This is steered purely in the system
-prompt (the "SHOWING EXISTING GALLERY CARDS" rule), so if it regresses, check
-that prompt block — there is no code-level router.
+that just duplicated an existing card. This is steered by the "SHOWING EXISTING
+GALLERY CARDS" prompt rule AND backed by a code-level deterministic fallback in
+`api_chat` (the prompt alone is unreliable at temp 0.7). If it regresses, check
+both the prompt block and the fallback. The fallback is DB-driven (no card names
+hard-coded): it matches the visitor message against live `gallery_cards` title
+keywords and, on a confident/unambiguous hit, synthesizes a `navigate` to that
+exact card — so simply NAMING a card ("seamless gutters?") opens it, not only an
+explicit "show me ...". It fires only when the model emitted no deliberate
+`navigate` (and respects `presentation_active`).
 
 **How to apply:** `generatePage` is only for NEW custom content (comparisons,
 custom layouts, summaries) the site does not already have.

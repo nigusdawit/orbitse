@@ -22669,6 +22669,66 @@ def _visitor_is_research_heavy(message):
     return len(text.split()) >= 40
 
 
+# Words that carry no disambiguating weight inside a gallery-card title, so
+# they don't count toward "the visitor named THIS card" matching. Kept generic
+# (industry-agnostic) — these are filler/structural words, not item names.
+_GALLERY_MATCH_STOPWORDS = {
+    "and", "the", "with", "for", "from", "your", "our", "new", "plus",
+    "a", "an", "to", "of", "in", "on", "or", "by", "per", "full", "home",
+    "service", "services", "package", "packages",
+}
+
+
+def _gallery_title_keywords(title):
+    """The significant lowercase words in a gallery-card title (>=3 chars and
+    not a filler stopword). These are what we look for in a visitor's message to
+    decide they named that specific card. Nothing here is item-specific — it is
+    derived live from whatever the card titles happen to be."""
+    words = re.sub(r"[^a-z0-9\s]", " ", (title or "").lower()).split()
+    return [w for w in words if len(w) >= 3 and w not in _GALLERY_MATCH_STOPWORDS]
+
+
+def _match_gallery_card_in_text(text, cards):
+    """Return the ONE gallery card a visitor's message clearly refers to, or
+    None when there is no confident, unambiguous match.
+
+    Purely DB-driven: the message tokens are matched against each LIVE card's
+    title keywords — no card names are ever hard-coded. This lets simply NAMING
+    a card ("seamless gutters?") open it, not only an explicit "show me ...".
+
+    Confidence rules (kept strict to avoid yanking the visitor to the wrong
+    place): a match wins only when the message echoes >=2 distinctive title
+    words of a single card, OR a single distinctive word that uniquely
+    identifies exactly one card. If several cards tie for the top score the
+    message is ambiguous and we return None (let the model/text answer stand).
+    """
+    msg_tokens = set(re.sub(r"[^a-z0-9\s]", " ", (text or "").lower()).split())
+    if not msg_tokens:
+        return None
+    scored = []
+    for c in cards:
+        if not (c.get("slug") or "").strip():
+            continue
+        kws = set(_gallery_title_keywords(c.get("title")))
+        if not kws:
+            continue
+        matched = len(kws & msg_tokens)
+        if matched:
+            scored.append((matched, c))
+    if not scored:
+        return None
+    scored.sort(key=lambda t: t[0], reverse=True)
+    top = scored[0][0]
+    tied = [c for n, c in scored if n == top]
+    if len(tied) > 1:
+        return None                      # ambiguous — don't guess
+    if top >= 2:
+        return tied[0]                   # echoed several distinctive words
+    if top == 1 and len(scored) == 1:
+        return tied[0]                   # one distinctive word, unique card
+    return None
+
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     """
@@ -23394,9 +23454,13 @@ def api_chat():
     active_prompt += (
         "\n\nSHOWING EXISTING GALLERY CARDS:\n"
         "  - The SITE INDEX lists every gallery card by name and slug. When "
-        "the visitor asks to see / show / pull up / look at a SPECIFIC item "
-        "that already exists as one of those gallery cards, OPEN the real "
-        "card with the navigate command — do NOT build a new page for it:\n"
+        "the visitor asks about, mentions, or wants to see a SPECIFIC item "
+        "that already exists as one of those gallery cards — EVEN IF they "
+        "only name it without a 'show me' verb (e.g. just \"seamless "
+        "gutters?\" or \"tell me about the metal roof\") — OPEN the real card "
+        "with the navigate command IN THE SAME TURN, alongside your text "
+        "answer, so they actually see it. Do NOT make them ask twice and do "
+        "NOT build a new page for it:\n"
         "    ```command\\n{\"action\": \"navigate\", \"target\": \"<card-slug>\"}\\n```\n"
         "  - navigate is instant and shows the ACTUAL website gallery card. "
         "generatePage is ONLY for NEW custom content the site does not "
@@ -24170,17 +24234,10 @@ def api_chat():
             # first card if the slug is missing, so this is safe. Skipped while a
             # presentation deck is on screen.
             try:
-                # "gallery" on its own is an unambiguous request for the gallery.
-                # Everything else (work/projects/photos/portfolio/examples) must
-                # be paired with a SEE/SHOW-type verb so we don't false-trigger on
-                # unrelated uses ("investment portfolio", "portfolio pricing").
-                _gallery_intent = re.search(
-                    r'\bgallery\b'
-                    r'|\b(?:show|see|view|look|browse|check|got|have|any)\b'
-                    r'[\w\s]{0,30}'
-                    r'\b(?:work|projects?|photos?|pictures?|images?|examples?|portfolio)\b',
-                    message or "", re.I,
-                )
+                # The model already navigated somewhere deliberately → respect it.
+                _nav_already = isinstance(cmd, dict) and cmd.get("action") == "navigate"
+                # A scroll to a work-showcase section shows nothing in embed mode,
+                # so we still treat that as "no real view opened" and may override.
                 _scrolls_to_showcase = (
                     isinstance(cmd, dict)
                     and cmd.get("action") == "scrollToSection"
@@ -24189,27 +24246,64 @@ def api_chat():
                         str(cmd.get("target") or ""), re.I,
                     )
                 )
-                if (
-                    _gallery_intent
-                    and not presentation_active
-                    and ((not cmd) or _scrolls_to_showcase)
-                ):
-                    _first = query_db(
-                        "SELECT slug FROM gallery_cards "
-                        "WHERE slug IS NOT NULL AND slug <> '' "
-                        "ORDER BY sort_order ASC LIMIT 1",
-                        fetchone=True,
-                    )
-                    if _first and _first.get("slug"):
+                # Load the live cards ONCE for both fallbacks below. DB-driven —
+                # nothing about which cards exist or what they're called is baked
+                # into the code; it's read fresh from the gallery_cards table.
+                _cards = query_db(
+                    "SELECT slug, title FROM gallery_cards "
+                    "WHERE slug IS NOT NULL AND slug <> '' "
+                    "ORDER BY sort_order ASC LIMIT 200"
+                ) or []
+
+                # ---- (a) SPECIFIC card the visitor named --------------------
+                # If the message clearly refers to ONE existing card — even when
+                # the visitor only NAMES it ("seamless gutters?") with no "show
+                # me" verb — open that exact card so they actually see it. Only
+                # acts when the model didn't already navigate, and the match must
+                # be confident/unambiguous (see _match_gallery_card_in_text).
+                _specific = None
+                if _cards and not presentation_active and not _nav_already:
+                    _specific = _match_gallery_card_in_text(message or "", _cards)
+                    if _specific and ((not cmd) or _scrolls_to_showcase):
                         _was = cmd.get("action") if isinstance(cmd, dict) else None
-                        cmd = {"action": "navigate", "target": _first["slug"]}
+                        cmd = {"action": "navigate", "target": _specific["slug"]}
                         print(
-                            f"[chat] gallery-intent fallback: visitor said "
+                            f"[chat] specific-card fallback: visitor said "
                             f"{(message or '')[:60]!r} (was={_was}) → navigate "
-                            f"'{_first['slug']}'"
+                            f"'{_specific['slug']}'"
                         )
+
+                # ---- (b) GENERIC "show me your work" intent -----------------
+                # "gallery" on its own is an unambiguous request for the gallery.
+                # Everything else (work/projects/photos/portfolio/examples) must
+                # be paired with a SEE/SHOW-type verb so we don't false-trigger on
+                # unrelated uses ("investment portfolio", "portfolio pricing").
+                # Only runs when no specific card was matched above.
+                if not _specific:
+                    _gallery_intent = re.search(
+                        r'\bgallery\b'
+                        r'|\b(?:show|see|view|look|browse|check|got|have|any)\b'
+                        r'[\w\s]{0,30}'
+                        r'\b(?:work|projects?|photos?|pictures?|images?|examples?|portfolio)\b',
+                        message or "", re.I,
+                    )
+                    if (
+                        _gallery_intent
+                        and not presentation_active
+                        and ((not cmd) or _scrolls_to_showcase)
+                        and _cards
+                    ):
+                        _first = _cards[0]
+                        if _first and _first.get("slug"):
+                            _was = cmd.get("action") if isinstance(cmd, dict) else None
+                            cmd = {"action": "navigate", "target": _first["slug"]}
+                            print(
+                                f"[chat] gallery-intent fallback: visitor said "
+                                f"{(message or '')[:60]!r} (was={_was}) → navigate "
+                                f"'{_first['slug']}'"
+                            )
             except Exception as _e:
-                print(f"[chat] gallery-intent fallback skipped: {_e}")
+                print(f"[chat] gallery fallback skipped: {_e}")
 
             if reply:
                 _va["final"] = reply
