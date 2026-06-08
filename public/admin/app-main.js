@@ -2175,6 +2175,89 @@
     let _inboxConvs = [];            // last-loaded conversation rows (for ai_paused lookup)
     let _inboxRenderedIds = new Set(); // message ids already painted in the open transcript (live append dedupe)
     let _inboxPollTimer = null;      // live auto-refresh handle (thread list + open transcript)
+    // --- "needs a human reply" alert bookkeeping (sidebar badge + title flash) ---
+    let _inboxSeenSigs = null;       // signatures the operator has already seen (null = no baseline yet)
+    let _inboxLastSigs = new Set();  // signatures from the most recent poll (for inboxOnView)
+    let _inboxFlashTimer = null;     // title-flash interval handle (null = not flashing)
+    let _inboxOrigTitle = null;      // page title to restore once the flash stops
+
+    // A conversation "needs a human reply" when the AI auto-reply is paused AND the
+    // visitor sent the last turn — nothing is answering them automatically. The
+    // signature folds in last_message_at so a fresh visitor message in an already-
+    // waiting conversation also reads as "new".
+    function _inboxNeedsReply(convs) {
+      return (convs || []).filter(c => c && c.ai_paused && c.last_role === 'user');
+    }
+    function _inboxSig(c) { return c.id + ':' + (c.last_message_at || c.started_at || ''); }
+
+    function _inboxSetNavBadge(n) {
+      const b = document.getElementById('chat-history-badge');
+      if (!b) return;
+      if (n > 0) { b.textContent = String(n); b.hidden = false; } else { b.hidden = true; }
+    }
+
+    // Blink the browser tab title so an operator working in another tab notices a
+    // visitor is waiting. Idempotent — guarded so it only ever installs one timer.
+    function _inboxStartFlash(n) {
+      if (_inboxOrigTitle == null) _inboxOrigTitle = document.title;
+      if (_inboxFlashTimer) return;
+      let on = false;
+      _inboxFlashTimer = setInterval(() => {
+        on = !on;
+        document.title = on ? `(${n}) Reply needed — ${_inboxOrigTitle}` : _inboxOrigTitle;
+      }, 1000);
+    }
+    function _inboxStopFlash() {
+      if (_inboxFlashTimer) { clearInterval(_inboxFlashTimer); _inboxFlashTimer = null; }
+      if (_inboxOrigTitle != null) { document.title = _inboxOrigTitle; }
+    }
+
+    // Update the sidebar badge + (off-tab) title flash from a fresh conversation
+    // list. Called by both the full inbox refresh and the lightweight badge poll.
+    function _inboxUpdateAlerts(convs) {
+      const needing = _inboxNeedsReply(convs);
+      const n = needing.length;
+      _inboxSetNavBadge(n);
+
+      const sigs = new Set(needing.map(_inboxSig));
+      _inboxLastSigs = sigs;
+
+      const tab = document.getElementById('tab-chat-history');
+      const viewing = !!(tab && tab.classList.contains('active')) && !document.hidden;
+      if (viewing) {
+        // Operator is looking at the inbox — everything counts as seen, no flashing.
+        _inboxSeenSigs = sigs;
+        _inboxStopFlash();
+        return;
+      }
+      if (_inboxSeenSigs == null) {
+        _inboxSeenSigs = sigs;   // first poll — establish a baseline, don't flash on load
+        return;
+      }
+      let isNew = false;
+      sigs.forEach(s => { if (!_inboxSeenSigs.has(s)) isNew = true; });
+      if (isNew && n > 0) _inboxStartFlash(n);
+      else if (n === 0) _inboxStopFlash();
+    }
+
+    // Called when the operator opens the Chat History tab — clears the title flash
+    // and marks the current waiting conversations as seen. The badge stays (it is a
+    // live count of who is still waiting, not an unread marker).
+    function inboxOnView() {
+      _inboxStopFlash();
+      _inboxSeenSigs = new Set(_inboxLastSigs);
+    }
+
+    // Lightweight off-tab refresh: pull just enough to keep the sidebar badge +
+    // title flash current while the operator is on another tab. Fail-open.
+    async function _inboxRefreshBadge() {
+      try {
+        const res = await fetch('/admin/api/chat-history', { credentials: 'same-origin' });
+        if (!res.ok) return;
+        const data = await res.json();
+        _inboxUpdateAlerts(data.conversations || []);
+      } catch (_) { /* fail-open: leave the badge as-is */ }
+    }
 
     async function loadChatHistory() {
       try {
@@ -2191,6 +2274,7 @@
         if (!list) return;
         const convs = data.conversations || [];
         _inboxConvs = convs;   // cache for ai_paused lookups (composer state)
+        _inboxUpdateAlerts(convs);   // sidebar needs-reply badge + title flash
 
         if (!convs.length) {
           list.innerHTML = '<div class="empty-state" style="padding:1rem;">No conversations yet. They appear here once visitors use the chatbot.</div>';
@@ -2477,10 +2561,17 @@
       if (_inboxPollTimer) return;
       _inboxPollTimer = setInterval(async () => {
         const tab = document.getElementById('tab-chat-history');
-        if (!tab || !tab.classList.contains('active') || document.hidden) return;
-        await loadChatHistory();      // refresh list, stats, live dots + AI-paused chips
-        _inboxSyncComposer();         // keep the Pause/Resume label in sync with fresh data
-        if (_inboxActiveConv != null) _inboxRefreshTranscript(_inboxActiveConv);
+        const viewing = !!(tab && tab.classList.contains('active')) && !document.hidden;
+        if (viewing) {
+          await loadChatHistory();      // refresh list, stats, live dots + AI-paused chips
+          _inboxSyncComposer();         // keep the Pause/Resume label in sync with fresh data
+          if (_inboxActiveConv != null) _inboxRefreshTranscript(_inboxActiveConv);
+        } else {
+          // Operator is on another tab (or the browser tab is in the background) —
+          // keep the sidebar needs-reply badge + title flash alive with a cheap,
+          // badge-only refresh so a waiting visitor never goes unnoticed.
+          await _inboxRefreshBadge();
+        }
       }, 6000);
     }
 

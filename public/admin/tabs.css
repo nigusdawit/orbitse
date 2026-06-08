@@ -435,3 +435,20 @@
   text-align: center;
   vertical-align: middle;
 }
+
+/* Sidebar nav "needs reply" badge — Chat History count of waiting visitors
+   (AI paused + last turn from the visitor). Pushed to the right edge of the
+   nav button so it reads like an inbox unread count. */
+.nav-badge {
+  display: inline-block;
+  min-width: 18px;
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
