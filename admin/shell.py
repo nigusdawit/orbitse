@@ -373,6 +373,37 @@ def admin_integrations():
                     "total": len(items)})
 
 
+@shell_bp.route("/admin/api/voice-stats", methods=["GET"])
+@admin_required
+def admin_voice_stats():
+    """Voice call KPIs for the CRM Voice pane (task 098, gap §3.6): calls in the last
+    7 days, total, a status breakdown, and a derived 'missed' count. Super-admin only
+    (call metadata); fail-open to zeros. NOTE: voice_calls has no duration or
+    booking-link column, so 'Avg handle' + 'Booked on call' aren't derivable here
+    without a schema add — deliberately omitted rather than faked."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    out = {"calls_7d": 0, "total": 0, "by_status": {}, "missed": 0}
+    try:
+        out["calls_7d"] = int((query_db(
+            "SELECT COUNT(*) AS n FROM voice_calls WHERE created_at >= NOW() - INTERVAL '7 days'",
+            fetchone=True) or {}).get("n") or 0)
+        out["total"] = int((query_db("SELECT COUNT(*) AS n FROM voice_calls",
+                                     fetchone=True) or {}).get("n") or 0)
+        rows = query_db("SELECT COALESCE(status,'') AS status, COUNT(*) AS n "
+                        "FROM voice_calls GROUP BY status") or []
+        bs = {}
+        for r in rows:
+            bs[(r.get("status") or "unknown").lower()] = int(r.get("n") or 0)
+        out["by_status"] = bs
+        out["missed"] = sum(bs.get(k, 0) for k in
+                            ("missed", "no-answer", "no_answer", "failed", "busy"))
+    except Exception:
+        pass   # fail-open → zeros
+    return jsonify(out)
+
+
 # Content tables whose edits read as "page/content changes" (not raw config churn).
 _FEED_CONTENT_TABLES = (
     "pages", "blog_posts", "page_sections", "faqs", "testimonials",

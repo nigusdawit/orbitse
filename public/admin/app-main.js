@@ -7681,6 +7681,20 @@
       return h + '</tbody></table>';
     }
 
+    // task 098 §3.6: prepend a small KPI strip (Calls·7d / Total / Missed) above the
+    // voice-call log. Avg-handle/Booked are intentionally absent (no duration/booking
+    // column on voice_calls). Fail-open — a stats hiccup just omits the strip.
+    async function _crmVoiceKpis(el) {
+      try {
+        const s = await (await fetch('/admin/api/voice-stats')).json();
+        const kpi = (l, v) => '<div class="gx-stat"><div class="gx-stat-label">' + l
+          + '</div><div class="gx-stat-value">' + _esc6(String(v)) + '</div></div>';
+        el.insertAdjacentHTML('afterbegin', '<div class="gx-stats" style="margin-bottom:12px;">'
+          + kpi('Calls · 7d', s.calls_7d || 0) + kpi('Total calls', s.total || 0)
+          + kpi('Missed', s.missed || 0) + '</div>');
+      } catch (_) { /* fail-open */ }
+    }
+
     async function _crmLoad(which) {
       const cfg = CRM_LISTS[which];
       const el = document.getElementById('crm-' + which);
@@ -7692,6 +7706,7 @@
         const rows = (data && data[cfg.rowsKey]) || [];
         el._rows = rows;
         el.innerHTML = _crmTable(which, rows);
+        if (which === 'voice') _crmVoiceKpis(el);   // task 098 §3.6: voice KPI strip
         // The pane the operator is looking at counts as "seen"; the others
         // get a badge for any rows newer than what was last viewed.
         if (which === _crmActive) _crmMarkSeen(which, rows);

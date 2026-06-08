@@ -235,6 +235,7 @@ GET /admin/api/visitor-profiles
 GET /admin/api/voice-calls
 GET /admin/api/voice-intros
 GET /admin/api/voice-settings
+GET /admin/api/voice-stats
 GET /admin/api/voice-usage
 GET /admin/api/voice/elevenlabs-voices
 GET /admin/api/wp-plugin/onboarding-links
