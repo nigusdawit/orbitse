@@ -125,6 +125,14 @@
     // open/close, going fullscreen) animate smoothly. Tuned above typical
     // settling jitter (a few–tens of px) but below a panel open (>100px).
     var ANIM_MIN = 48;
+    // The smooth height animation used for deliberate panel open/close. It is
+    // applied only AFTER the initial load has settled (see below) — during the
+    // first load the iframe size converges through several steps (band measured
+    // small, then larger once the host-size handshake lands, then content
+    // reflow), and animating each step makes an already-open panel visibly
+    // shake. We snap through that convergence and turn the animation on after.
+    var TRANSITION = "height 0.22s cubic-bezier(0.22, 1, 0.36, 1)";
+    var SETTLE_MS = 900;   // > the last meaningful hostsize handshake retry (800ms)
 
     var iframe = document.createElement("iframe");
     iframe.id = FRAME_ID;
@@ -154,11 +162,15 @@
       "background:transparent",
       "color-scheme:normal",
       "z-index:2147482000",
-      // Smooth height animation so opening the panel / going fullscreen glides
-      // instead of snapping. The clip-path is CLEARED while the height animates
-      // (see setCollapsed/setExpanded) and re-applied once it settles, so the
-      // moving box never fights stale clip coords — that was the old flicker.
-      "transition:height 0.22s cubic-bezier(0.22, 1, 0.36, 1)"
+      // Start with NO height transition so the iframe snaps straight to its
+      // converged size on first load (it briefly steps through several sizes
+      // while the host-size handshake lands and content reflows — animating
+      // those steps makes an already-open panel shake). The smooth animation is
+      // turned on after SETTLE_MS (see the load handler) for deliberate panel
+      // open/close. The clip-path is CLEARED while the height animates (see
+      // setCollapsed/setExpanded) and re-applied once it settles, so the moving
+      // box never fights stale clip coords — that was the old flicker.
+      "transition:none"
     ].join(";");
     document.body.appendChild(iframe);
 
@@ -188,6 +200,11 @@
     iframe.addEventListener("load", function () {
       sendHostSize();
       [200, 800, 2000].forEach(function (t) { setTimeout(sendHostSize, t); });
+      // Once the size has converged through the load-time handshake/reflow,
+      // turn the smooth height animation on so user-initiated panel open/close
+      // glides. Until then every sizing step snaps, so an already-open panel
+      // can't shake on first paint.
+      setTimeout(function () { iframe.style.transition = TRANSITION; }, SETTLE_MS);
     });
 
     // Clip the (full-width) iframe down to ONLY the rectangles its concierge UI
