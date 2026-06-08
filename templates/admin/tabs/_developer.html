@@ -14,7 +14,39 @@
     </p>
     <div id="developer-loading" class="empty-state" style="padding:1.5rem;" data-testid="text-developer-loading">Loading…</div>
     <div id="developer-content" style="display:none;">
-      <h3 style="margin:1rem 0 0.5rem 0; font-size:1rem; color:var(--admin-text-muted); text-transform:uppercase; letter-spacing:0.05em;">Runbook</h3>
+      {# task 099 (gap §6.4) — Developer health KPIs from /admin/api/dev-health. #}
+      <h3 style="margin:1rem 0 0.5rem 0; font-size:1rem; color:var(--admin-text-muted); text-transform:uppercase; letter-spacing:0.05em;">Health</h3>
+      <div id="developer-health-kpis" class="gx-stats" data-testid="grid-developer-health-kpis" style="margin-bottom:0.5rem;">
+        <div class="gx-stat"><div class="gx-stat-label">Errors · 24h</div>
+          <div class="gx-stat-value" id="dh-errors" data-testid="text-dh-errors">—</div></div>
+        <div class="gx-stat"><div class="gx-stat-label">DB size</div>
+          <div class="gx-stat-value" id="dh-dbsize" data-testid="text-dh-dbsize">—</div></div>
+        <div class="gx-stat"><div class="gx-stat-label">Uptime</div>
+          <div class="gx-stat-value" id="dh-uptime" data-testid="text-dh-uptime">—</div></div>
+        <div class="gx-stat"><div class="gx-stat-label">AI p95 latency</div>
+          <div class="gx-stat-value" id="dh-p95" data-testid="text-dh-p95">—</div></div>
+      </div>
+
+      {# task 099 (gap §6.5) — data export (CSV) for whitelisted tables. #}
+      <h3 style="margin:1.5rem 0 0.5rem 0; font-size:1rem; color:var(--admin-text-muted); text-transform:uppercase; letter-spacing:0.05em;">Data export</h3>
+      <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-bottom:0.5rem;">
+        <select id="dev-export-table" data-testid="select-dev-export" style="padding:0.4rem; border-radius:6px;">
+          <option value="leads">Leads</option>
+          <option value="subscribers">Subscribers</option>
+          <option value="orders">Orders</option>
+          <option value="callback_requests">Callbacks</option>
+          <option value="meetings">Meetings</option>
+          <option value="form_submissions">Form submissions</option>
+          <option value="visitor_profiles">Visitor profiles</option>
+          <option value="products">Products</option>
+          <option value="pages">Pages</option>
+          <option value="blog_posts">Blog posts</option>
+          <option value="events">Events</option>
+        </select>
+        <button class="btn-secondary" onclick="devExportCsv()" data-testid="button-dev-export">Download CSV</button>
+      </div>
+
+      <h3 style="margin:1.5rem 0 0.5rem 0; font-size:1rem; color:var(--admin-text-muted); text-transform:uppercase; letter-spacing:0.05em;">Runbook</h3>
       <div id="developer-runbook" style="display:flex; flex-direction:column; gap:0.5rem;" data-testid="list-developer-runbook"></div>
       <h3 style="margin:1.5rem 0 0.5rem 0; font-size:1rem; color:var(--admin-text-muted); text-transform:uppercase; letter-spacing:0.05em;">Service Health</h3>
       <p style="margin:0 0 0.75rem 0; font-size:0.8125rem; color:var(--admin-text-muted);">

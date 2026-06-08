@@ -28607,6 +28607,82 @@ def admin_performance_stats():
     return jsonify(_collect_performance_stats())
 
 
+@app.route("/admin/api/dev-health", methods=["GET"])
+@admin_required
+def admin_dev_health():
+    """Developer health KPIs (task 099, gap §6.4): error count (24h, from sentry_alerts),
+    DB size, process uptime, and AI-turn p95 latency (ai_activity_log.duration_ms — the
+    available proxy; general HTTP latency isn't instrumented). Super-admin only (infra
+    detail); each metric is its own try/except → fail-open to None so one bad query
+    never blanks the rest."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    out = {"error_24h": None, "db_size_bytes": None, "uptime_seconds": None, "p95_latency_ms": None}
+    try:
+        out["error_24h"] = int((query_db(
+            "SELECT COUNT(*) AS n FROM sentry_alerts WHERE received_at >= NOW() - INTERVAL '24 hours'",
+            fetchone=True) or {}).get("n") or 0)
+    except Exception:
+        pass
+    try:
+        out["db_size_bytes"] = int((query_db(
+            "SELECT pg_database_size(current_database()) AS b", fetchone=True) or {}).get("b") or 0)
+    except Exception:
+        pass
+    try:
+        out["uptime_seconds"] = max(0, int(_time.time() - VELO_APP_START_TIME))
+    except Exception:
+        pass
+    try:
+        r = query_db(
+            "SELECT PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms) AS p95 "
+            "FROM ai_activity_log "
+            "WHERE created_at >= NOW() - INTERVAL '24 hours' AND duration_ms IS NOT NULL",
+            fetchone=True) or {}
+        out["p95_latency_ms"] = int(r["p95"]) if r.get("p95") is not None else None
+    except Exception:
+        pass
+    return jsonify(out)
+
+
+# Tables an admin may export as CSV (task 099, gap §6.5). HARD-CODED whitelist — the
+# <table> path param is validated against this set before it's ever put in SQL, so the
+# SELECT interpolation below is injection-safe.
+_CSV_EXPORT_TABLES = {
+    "leads", "subscribers", "orders", "callback_requests", "meetings",
+    "form_submissions", "visitor_profiles", "products", "pages", "blog_posts", "events",
+}
+
+
+@app.route("/admin/api/export/<table>.csv", methods=["GET"])
+@admin_required
+def admin_export_csv(table):
+    """Export a whitelisted table as a CSV download (task 099, gap §6.5). Super-admin
+    only (several of these hold PII). Bounded to 10k rows. The table name is validated
+    against _CSV_EXPORT_TABLES before use, so the interpolation is safe."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    if table not in _CSV_EXPORT_TABLES:
+        return jsonify({"error": "Unknown or non-exportable table."}), 400
+    import csv as _csv
+    import io as _io
+    try:
+        rows = query_db("SELECT * FROM %s ORDER BY id DESC LIMIT 10000" % table) or []
+        buf = _io.StringIO()
+        if rows:
+            writer = _csv.DictWriter(buf, fieldnames=list(rows[0].keys()), extrasaction="ignore")
+            writer.writeheader()
+            for r in rows:
+                writer.writerow({k: ("" if v is None else v) for k, v in r.items()})
+        return Response(buf.getvalue(), mimetype="text/csv",
+                        headers={"Content-Disposition": 'attachment; filename="%s.csv"' % table})
+    except Exception as e:
+        capture_exc(e, "admin_export_csv")
+        return jsonify({"error": "export_failed"}), 500
+
+
 @app.route("/admin/api/performance/regenerate-image-variants", methods=["POST"])
 @admin_required
 def admin_regenerate_image_variants():

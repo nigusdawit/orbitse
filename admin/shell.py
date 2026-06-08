@@ -404,6 +404,56 @@ def admin_voice_stats():
     return jsonify(out)
 
 
+@shell_bp.route("/admin/api/campaign-stats", methods=["GET"])
+@admin_required
+def admin_campaign_stats():
+    """Campaign analytics (task 099, gap §5.1/5.2): per-campaign sent/opens/clicks +
+    open/click rates from messaging_log, plus 30-day KPIs. Super-admin only; fail-open.
+    Revenue attribution is omitted (no campaign→utm link is modeled — surfacing a faked
+    number would be dishonest)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    campaigns = []
+    kpis = {"sent_30d": 0, "open_rate": 0.0, "click_rate": 0.0, "campaigns_30d": 0}
+    try:
+        rows = query_db(
+            "SELECT c.id, c.name, c.channel, c.status, c.created_at, "
+            "       COUNT(l.id) AS sent, COUNT(l.opened_at) AS opens, COUNT(l.clicked_at) AS clicks "
+            "FROM messaging_campaigns c "
+            "LEFT JOIN messaging_log l ON l.campaign_id = c.id AND l.is_test = FALSE "
+            "GROUP BY c.id, c.name, c.channel, c.status, c.created_at "
+            "ORDER BY c.id DESC LIMIT 100") or []
+        for r in rows:
+            sent = int(r.get("sent") or 0)
+            opens = int(r.get("opens") or 0)
+            clicks = int(r.get("clicks") or 0)
+            campaigns.append({
+                "id": r["id"], "name": r.get("name") or "", "channel": r.get("channel") or "",
+                "status": r.get("status") or "", "sent": sent, "opens": opens, "clicks": clicks,
+                "open_rate": round(100.0 * opens / sent, 1) if sent else 0.0,
+                "click_rate": round(100.0 * clicks / sent, 1) if sent else 0.0,
+                "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+            })
+    except Exception:
+        pass
+    try:
+        k = query_db(
+            "SELECT COUNT(*) AS sent, COUNT(opened_at) AS opens, COUNT(clicked_at) AS clicks "
+            "FROM messaging_log WHERE is_test = FALSE AND created_at >= NOW() - INTERVAL '30 days'",
+            fetchone=True) or {}
+        sent = int(k.get("sent") or 0)
+        kpis["sent_30d"] = sent
+        kpis["open_rate"] = round(100.0 * int(k.get("opens") or 0) / sent, 1) if sent else 0.0
+        kpis["click_rate"] = round(100.0 * int(k.get("clicks") or 0) / sent, 1) if sent else 0.0
+        kpis["campaigns_30d"] = int((query_db(
+            "SELECT COUNT(*) AS n FROM messaging_campaigns WHERE created_at >= NOW() - INTERVAL '30 days'",
+            fetchone=True) or {}).get("n") or 0)
+    except Exception:
+        pass
+    return jsonify({"campaigns": campaigns, "kpis": kpis})
+
+
 # Content tables whose edits read as "page/content changes" (not raw config churn).
 _FEED_CONTENT_TABLES = (
     "pages", "blog_posts", "page_sections", "faqs", "testimonials",

@@ -9948,9 +9948,44 @@
         _loadSuperAdminAudit();
         // task 092 P2 — Sentry error queue, same parallel / non-blocking pattern.
         _loadSentryAlerts();
+        // task 099 §6.4 — health KPIs, same parallel / fail-open pattern.
+        _loadDevHealth();
       } catch (e) {
         loading.textContent = 'Could not load developer console: ' + e.message;
       }
+    }
+
+    // task 099 (gap §6.4): populate the Developer-tab health KPI strip. Fail-open —
+    // a hiccup just leaves the tiles at "—" and never breaks the rest of the tab.
+    async function _loadDevHealth() {
+      try {
+        const s = await (await fetch('/admin/api/dev-health', { credentials: 'same-origin' })).json();
+        const setT = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+        setT('dh-errors', s.error_24h == null ? '—' : Number(s.error_24h).toLocaleString());
+        let db = '—';
+        if (s.db_size_bytes != null) {
+          const u = ['B', 'KB', 'MB', 'GB', 'TB']; let n = Number(s.db_size_bytes), i = 0;
+          while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+          db = (n >= 10 || i === 0 ? Math.round(n) : n.toFixed(1)) + ' ' + u[i];
+        }
+        setT('dh-dbsize', db);
+        let ut = '—';
+        if (s.uptime_seconds != null) {
+          const up = Number(s.uptime_seconds), d = Math.floor(up / 86400),
+            h = Math.floor((up % 86400) / 3600), m = Math.floor((up % 3600) / 60);
+          ut = d > 0 ? (d + 'd ' + h + 'h') : (h > 0 ? (h + 'h ' + m + 'm') : (m + 'm'));
+        }
+        setT('dh-uptime', ut);
+        setT('dh-p95', s.p95_latency_ms == null ? '—' : (Number(s.p95_latency_ms).toLocaleString() + ' ms'));
+      } catch (_) { /* fail-open */ }
+    }
+
+    // task 099 (gap §6.5): download a whitelisted table as CSV (super-admin route).
+    function devExportCsv() {
+      const sel = document.getElementById('dev-export-table');
+      const t = sel && sel.value;
+      if (!t) return;
+      window.open('/admin/api/export/' + encodeURIComponent(t) + '.csv', '_blank');
     }
 
     function _escAuditCell(s) {
@@ -12514,8 +12549,41 @@
 
     /* ---------- CAMPAIGNS ---------- */
 
+    // task 099 (gap §5.1/5.2): campaign analytics — KPI strip (Sent·30d / Open% /
+    // Click% / Campaigns·30d) + a per-campaign open/click-rate table, from the real
+    // messaging_log tracking data. Fail-open (a hiccup just clears the panel).
+    async function _loadCampaignStats() {
+      const el = document.getElementById('campaign-analytics');
+      if (!el) return;
+      try {
+        const d = await (await fetch('/admin/api/campaign-stats', { credentials: 'same-origin' })).json();
+        const k = d.kpis || {};
+        const kpi = (l, v) => '<div class="gx-stat"><div class="gx-stat-label">' + l
+          + '</div><div class="gx-stat-value">' + escapeHtml(String(v)) + '</div></div>';
+        let html = '<div class="gx-stats" style="margin-bottom:10px;">'
+          + kpi('Sent · 30d', (k.sent_30d || 0).toLocaleString())
+          + kpi('Open rate', (k.open_rate || 0) + '%')
+          + kpi('Click rate', (k.click_rate || 0) + '%')
+          + kpi('Campaigns · 30d', k.campaigns_30d || 0) + '</div>';
+        const cs = (d.campaigns || []).filter(c => c.sent > 0).slice(0, 10);
+        if (cs.length) {
+          html += '<table style="width:100%;border-collapse:collapse;font-size:13px;"><thead><tr style="text-align:left;opacity:.7;">'
+            + '<th style="padding:6px;">Campaign</th><th style="padding:6px;">Sent</th>'
+            + '<th style="padding:6px;">Open %</th><th style="padding:6px;">Click %</th></tr></thead><tbody>'
+            + cs.map(c => '<tr style="border-top:1px solid rgba(255,255,255,.06);">'
+              + '<td style="padding:6px;">' + escapeHtml(c.name || '') + '</td>'
+              + '<td style="padding:6px;">' + (c.sent || 0) + '</td>'
+              + '<td style="padding:6px;">' + (c.open_rate || 0) + '%</td>'
+              + '<td style="padding:6px;">' + (c.click_rate || 0) + '%</td></tr>').join('')
+            + '</tbody></table>';
+        }
+        el.innerHTML = html;
+      } catch (_) { el.innerHTML = ''; }
+    }
+
     async function loadMessagingCampaigns() {
       loadMessagingStatus();
+      _loadCampaignStats();   // task 099 §5.1/5.2 analytics
       const tbody = document.getElementById('campaigns-tbody');
       if (!tbody) return;
       tbody.innerHTML = '<tr><td colspan="7" class="empty-state">Loading…</td></tr>';
