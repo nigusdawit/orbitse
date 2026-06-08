@@ -1393,11 +1393,10 @@ TO CUSTOMIZE THIS DASHBOARD:
        ==================================================================== -->
   {% include "admin/tabs/_services.html" %}
 
-
-  <!-- ====================================================================
-       SAVED PAGES TAB — AI-generated HTML pages stored in the database
-       ==================================================================== -->
-  {% include "admin/tabs/_pages.html" %}
+  {# NOTE: the Saved Pages tab (_pages.html) is included once, above near the Page Layout
+     section. A second include used to sit here with a stale "AI-generated HTML pages"
+     comment (a task-076 carve-out artifact), producing two #tab-pages divs with duplicate
+     ids. Removed — do not re-add. #}
 
   <!--
   ========================================================================
