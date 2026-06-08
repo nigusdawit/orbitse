@@ -178,6 +178,7 @@ GET /admin/api/overview/attention
 GET /admin/api/overview/revenue-by-source
 GET /admin/api/overview/stats
 GET /admin/api/page-sections
+GET /admin/api/page-view-counts
 GET /admin/api/pages
 GET /admin/api/pages/<int:page_id>
 GET /admin/api/performance

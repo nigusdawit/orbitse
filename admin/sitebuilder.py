@@ -282,6 +282,41 @@ def admin_list_pages():
     return jsonify([_serialize_page(r) for r in rows])
 
 
+@sitebuilder_bp.route("/admin/api/page-view-counts", methods=["GET"])
+@admin_required
+def admin_page_view_counts():
+    """GET /admin/api/page-view-counts?days=7 — per-page public view counts over
+    the last N days (task 102 §4.1), keyed by page id so the Pages list can show a
+    'Views · 7d' column. page_views are logged by raw URL ('/p/<slug>?...'), so we
+    strip the query string with split_part and EXACT-match the path against
+    '/p/' || slug (exact, not LIKE, so '/p/about' never counts '/p/about-us' views).
+    Fail-open: any error returns an empty map so the Pages list still renders."""
+    try:
+        days = int(request.args.get("days", 7))
+    except (TypeError, ValueError):
+        days = 7
+    days = max(1, min(days, 365))
+    try:
+        rows = query_db(
+            """
+            SELECT p.id AS page_id, COUNT(pv.id) AS views
+              FROM pages p
+              LEFT JOIN page_views pv
+                ON split_part(pv.page_url, '?', 1) = '/p/' || p.slug
+               AND pv.created_at >= NOW() - MAKE_INTERVAL(days => %s)
+             GROUP BY p.id
+            """,
+            (days,),
+        ) or []
+        return jsonify({
+            "days": days,
+            "views": {str(r["page_id"]): int(r["views"] or 0) for r in rows},
+        })
+    except Exception as e:
+        print(f"[pages] view-counts failed: {e}")
+        return jsonify({"days": days, "views": {}})
+
+
 @sitebuilder_bp.route("/admin/api/pages", methods=["POST"])
 @admin_required
 def admin_create_page():

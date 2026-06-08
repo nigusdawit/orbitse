@@ -1,68 +1,95 @@
-{# admin/tabs/_pages.html — 'pages' tab panel. Carved from dashboard.html
-   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
-   context (appearance / has_feature / is_super_admin). #}
+{# admin/tabs/_pages.html — 'pages' (CMS Saved Pages) tab. Master-detail layout
+   (task 102 §4.2): the page list lives on the left, an inline editor on the right —
+   no more prompt() dialogs or a separate modal. Per-page "Views · 7d" column (§4.1).
+
+   All styling is scoped under #tab-pages and uses --admin-* vars, so it cannot leak
+   into the other tabs and works in both light and dark themes.
+
+   NOTE: the JS handlers are cms*-prefixed (loadCmsPages / cmsSelectPage / cmsSavePage
+   / cmsDeletePage / cmsTogglePage). The old generic names (loadPages/deletePage)
+   collided with the AI-generated-pages feature elsewhere in app-main.js; the unique
+   prefix keeps the two features isolated. #}
 <div id="tab-pages" class="tab-content">
-    <div class="section-header-admin">
-      <div>
-        <h2>Saved Pages</h2>
-        <p>Create extra pages reachable at <code>/p/&lt;slug&gt;</code>. Each page reuses the sections you've already set up on the Page Layout tab. Use the per-section "Menu link target" field there to surface a page in the in-page Section Menu.</p>
-      </div>
-      <button class="btn btn-primary" onclick="showAddPageForm()" data-testid="button-add-page">+ New Page</button>
+  <style>
+    #tab-pages .pm-grid { display:grid; grid-template-columns: minmax(0,1.4fr) minmax(0,1fr); gap:1.25rem; align-items:start; }
+    @media (max-width: 900px) { #tab-pages .pm-grid { grid-template-columns: 1fr; } }
+    #tab-pages .pm-list table { width:100%; }
+    #tab-pages tr.pm-row { cursor:pointer; }
+    #tab-pages tr.pm-row.pm-selected { background: var(--admin-bg-subtle, rgba(99,102,241,0.10)); }
+    #tab-pages tr.pm-row.pm-selected td:first-child { box-shadow: inset 3px 0 0 var(--admin-link, #6366f1); }
+    #tab-pages .pm-views { font-variant-numeric: tabular-nums; text-align:right; white-space:nowrap; }
+    #tab-pages .pm-detail { position:sticky; top:1rem; border:1px solid var(--admin-border); border-radius:12px; padding:1.25rem; background:var(--admin-card-bg, var(--admin-bg)); }
+    #tab-pages .pm-detail h3 { margin-top:0; }
+    #tab-pages .pm-muted { color:var(--admin-text-muted); font-size:0.8rem; }
+    #tab-pages #pm-sections-list { list-style:none; padding:0; margin:0.4rem 0 0; max-height:300px; overflow:auto; border:1px solid var(--admin-border); border-radius:8px; }
+  </style>
+
+  <div class="section-header-admin">
+    <div>
+      <h2>Saved Pages</h2>
+      <p>Create extra pages reachable at <code>/p/&lt;slug&gt;</code>. Select a page to edit it inline. Each page reuses the sections you set up on the Page Layout tab. The <strong>Views&nbsp;·&nbsp;7d</strong> column counts public visits to <code>/p/&lt;slug&gt;</code> over the last 7 days.</p>
+    </div>
+    <button class="btn btn-primary" onclick="cmsNewPage()" data-testid="button-add-page">+ New Page</button>
+  </div>
+
+  <div class="pm-grid">
+    <!-- LEFT: master list -->
+    <div class="pm-list">
+      <table class="data-table" id="pages-table">
+        <thead>
+          <tr>
+            <th>Title</th>
+            <th>URL</th>
+            <th class="pm-views">Views · 7d</th>
+            <th>Enabled</th>
+          </tr>
+        </thead>
+        <tbody id="pages-tbody">
+          <tr><td colspan="4" class="empty-state">Loading...</td></tr>
+        </tbody>
+      </table>
     </div>
 
-    <div id="add-page-form-panel" class="form-panel" style="display:none;">
-      <h3>New Page</h3>
-      <div class="form-row">
-        <div class="form-group">
-          <label for="new-page-title">Title</label>
-          <input type="text" id="new-page-title" placeholder="About Us" oninput="autoGeneratePageSlug()" data-testid="input-page-title">
-        </div>
-        <div class="form-group">
-          <label for="new-page-slug">URL slug</label>
-          <input type="text" id="new-page-slug" placeholder="about-us" data-testid="input-page-slug">
-          <p style="color:var(--admin-text-muted); font-size:0.78rem; margin-top:0.25rem;">Public URL will be <code>/p/&lt;slug&gt;</code>. Lowercase letters, numbers and hyphens only.</p>
-        </div>
-      </div>
-      <div class="form-group">
-        <label for="new-page-meta">Meta description (SEO)</label>
-        <textarea id="new-page-meta" rows="2" placeholder="Short summary used in search engine results & social shares." data-testid="input-page-meta"></textarea>
-      </div>
-      <div class="form-actions">
-        <button class="btn btn-secondary" onclick="hideAddPageForm()" data-testid="button-cancel-page">Cancel</button>
-        <button class="btn btn-primary" onclick="createPage()" data-testid="button-create-page">Create Page</button>
-      </div>
-    </div>
+    <!-- RIGHT: inline detail editor -->
+    <div class="pm-detail" id="pm-detail">
+      <div id="pm-empty" class="pm-muted">Select a page on the left to edit it, or click “+ New Page”.</div>
 
-    <table class="data-table" id="pages-table">
-      <thead>
-        <tr>
-          <th>Title</th>
-          <th>URL</th>
-          <th>Sections</th>
-          <th>Enabled</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody id="pages-tbody">
-        <tr><td colspan="5" class="empty-state">Loading...</td></tr>
-      </tbody>
-    </table>
+      <div id="pm-editor" style="display:none;">
+        <h3 id="pm-editor-title">Edit Page</h3>
+        <input type="hidden" id="pm-page-id">
 
-    <!-- Per-page section-assignment editor. Hidden until the admin
-         clicks "Sections" on a row. The list is built from the same
-         /admin/api/page-sections feed as the Page Layout tab — admins
-         tick the sections they want, drag to reorder, then Save which
-         PUTs the new list to /admin/api/pages/<id>/sections. -->
-    <div id="page-sections-editor" class="form-panel" style="display:none; margin-top:1.5rem;">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
-        <h3 id="page-sections-editor-title">Page Sections</h3>
-        <div style="display:flex; gap:0.5rem;">
-          <button class="btn btn-primary btn-sm" onclick="savePageSections()" data-testid="button-save-page-sections">Save Order</button>
-          <button class="btn btn-secondary btn-sm" onclick="closePageSectionsEditor()" data-testid="button-close-page-sections">Close</button>
+        <div class="form-group">
+          <label for="pm-title">Title</label>
+          <input type="text" id="pm-title" placeholder="About Us" oninput="pmAutoSlug()" data-testid="input-page-title">
+        </div>
+        <div class="form-group">
+          <label for="pm-slug">URL slug</label>
+          <input type="text" id="pm-slug" placeholder="about-us" oninput="pmSlugPreview()" data-testid="input-page-slug">
+          <p class="pm-muted">Public URL: <code>/p/</code><span id="pm-slug-preview"></span>. Lowercase letters, numbers and hyphens only.</p>
+        </div>
+        <div class="form-group">
+          <label for="pm-meta">Meta description (SEO)</label>
+          <textarea id="pm-meta" rows="2" placeholder="Short summary used in search results & social shares." data-testid="input-page-meta"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="toggle-switch" style="display:inline-flex; align-items:center; gap:0.5rem; margin:0;">
+            <input type="checkbox" id="pm-enabled" data-testid="toggle-page-enabled">
+            <span class="toggle-slider"></span>
+          </label>
+          <span class="pm-muted" style="margin-left:0.5rem;">Visible to the public</span>
+        </div>
+
+        <div class="form-group" id="pm-sections-wrap">
+          <label>Sections <span class="pm-muted">(tick + drag to reorder)</span></label>
+          <ul id="pm-sections-list"></ul>
+        </div>
+
+        <div class="form-actions" style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center;">
+          <button class="btn btn-primary" onclick="cmsSavePage()" data-testid="button-save-page">Save</button>
+          <a id="pm-view-link" class="btn btn-secondary" target="_blank" rel="noopener" href="#" data-testid="link-page-view">View ↗</a>
+          <button class="btn btn-danger" onclick="cmsDeleteSelectedPage()" data-testid="button-delete-page" style="margin-left:auto;">Delete</button>
         </div>
       </div>
-      <p style="color:var(--admin-text-muted); font-size:0.85rem; margin-bottom:0.75rem;">Tick the sections you want on this page. Drag the handles to reorder. The page renders with the same nav and footer as your homepage.</p>
-      <input type="hidden" id="page-sections-editor-page-id">
-      <ul id="page-sections-editor-list" class="data-table" style="list-style:none; padding:0; margin:0;"></ul>
     </div>
   </div>
+</div>

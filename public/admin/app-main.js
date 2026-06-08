@@ -5420,55 +5420,53 @@
     let _pagesCache = [];
     let _pageSectionsCache = [];  // Snapshot of all sections for the picker.
 
-    async function loadPages() {
+    let _pmSelectedId = null;          // task 102 §4.2 — selected page in the master-detail editor
+
+    // task 102 — CMS Saved Pages loader. Renamed from loadPages() because that name
+    // collided with the AI-generated-pages loader later in this file (plain top-level
+    // declarations → last one wins), which silently hijacked this tab. Fetches pages,
+    // their sections, and per-page 7-day view counts (§4.1, fail-open) in parallel,
+    // then renders the left-hand master list. Clicking a row selects it into the editor.
+    async function loadCmsPages() {
       try {
-        const [pagesRes, sectionsRes] = await Promise.all([
+        const [pagesRes, sectionsRes, viewsRes] = await Promise.all([
           fetch('/admin/api/pages'),
           fetch('/admin/api/page-sections'),
+          fetch('/admin/api/page-view-counts?days=7').catch(() => null),   // §4.1 — never block the list
         ]);
         const pages = await pagesRes.json();
         const sections = await sectionsRes.json();
         _pagesCache = Array.isArray(pages) ? pages : [];
         _pageSectionsCache = Array.isArray(sections) ? sections : [];
+        // View counts are best-effort: {page_id: count}. Any failure → empty map → "—".
+        let viewMap = {};
+        try { if (viewsRes && viewsRes.ok) viewMap = (await viewsRes.json()).views || {}; } catch (_) { viewMap = {}; }
 
         const tbody = document.getElementById('pages-tbody');
         if (!tbody) return;
         if (!_pagesCache.length) {
-          tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No saved pages yet. Click "+ New Page" to create one.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No saved pages yet. Click "+ New Page" to create one.</td></tr>';
+          if (_pmSelectedId === null) cmsClearDetail();
           return;
         }
-        // Render each page row. The "Sections" cell shows a count + the
-        // list of titles (truncated) so the admin can see at a glance
-        // which sections each page contains without opening the editor.
-        const sectionTitleById = new Map(_pageSectionsCache.map(s => [s.id, s.title || s.slug]));
         tbody.innerHTML = _pagesCache.map(p => {
-          const ids = p.section_ids || [];
-          const titles = ids.map(id => sectionTitleById.get(id)).filter(Boolean);
-          const titleSummary = titles.length
-            ? titles.slice(0, 3).map(esc).join(', ') + (titles.length > 3 ? `, +${titles.length - 3} more` : '')
-            : '<span style="color:var(--admin-text-muted);">none</span>';
           const url = '/p/' + p.slug;
+          const views = viewMap[String(p.id)];
+          const viewsCell = (views === undefined || views === null) ? '—' : views;
+          const selCls = (p.id === _pmSelectedId) ? ' pm-selected' : '';
           return `
-            <tr data-id="${p.id}">
+            <tr class="pm-row${selCls}" data-id="${p.id}" onclick="cmsSelectPage(${p.id})">
               <td>
                 <strong data-testid="text-page-title-${p.id}">${esc(p.title || p.slug)}</strong>
                 ${p.meta_description ? `<div style="color:var(--admin-text-muted); font-size:0.78rem; margin-top:0.25rem;">${esc(p.meta_description)}</div>` : ''}
               </td>
-              <td><a href="${esc(url)}" target="_blank" rel="noopener" data-testid="link-page-${p.id}" style="color:var(--admin-link);">${esc(url)}</a></td>
-              <td>
-                <span data-testid="text-page-sections-${p.id}">${ids.length} section${ids.length === 1 ? '' : 's'}</span>
-                <div style="color:var(--admin-text-muted); font-size:0.78rem; margin-top:0.25rem;">${titleSummary}</div>
-              </td>
+              <td><a href="${esc(url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()" data-testid="link-page-${p.id}" style="color:var(--admin-link);">${esc(url)}</a></td>
+              <td class="pm-views" data-testid="text-page-views-${p.id}">${viewsCell}</td>
               <td>
                 <label class="toggle-switch" data-testid="toggle-page-${p.id}">
-                  <input type="checkbox" ${p.enabled ? 'checked' : ''} onchange="togglePage(${p.id}, this.checked)">
+                  <input type="checkbox" ${p.enabled ? 'checked' : ''} onclick="event.stopPropagation()" onchange="cmsTogglePage(${p.id}, this.checked)">
                   <span class="toggle-slider"></span>
                 </label>
-              </td>
-              <td class="cell-actions">
-                <button class="btn btn-secondary btn-sm" onclick="editPageSections(${p.id})" data-testid="button-edit-page-sections-${p.id}">Sections</button>
-                <button class="btn btn-secondary btn-sm" onclick="editPage(${p.id})" data-testid="button-edit-page-${p.id}">Edit</button>
-                <button class="btn btn-danger btn-sm" onclick="deletePage(${p.id})" data-testid="button-delete-page-${p.id}">Delete</button>
               </td>
             </tr>
           `;
@@ -5478,45 +5476,51 @@
       }
     }
 
-    function autoGeneratePageSlug() {
-      const title = document.getElementById('new-page-title').value;
-      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-      document.getElementById('new-page-slug').value = slug;
+    // Slug helpers for the inline editor. pmAutoSlug only auto-fills the slug for a
+    // NEW page (empty page-id) so we never silently rewrite a live page's slug while
+    // the admin is just fixing a typo in the title.
+    function pmSlugify(s) {
+      return (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    }
+    function pmAutoSlug() {
+      const isNew = !document.getElementById('pm-page-id').value;
+      if (isNew) document.getElementById('pm-slug').value = pmSlugify(document.getElementById('pm-title').value);
+      pmSlugPreview();
+    }
+    function pmSlugPreview() {
+      const el = document.getElementById('pm-slug-preview');
+      if (el) el.textContent = pmSlugify(document.getElementById('pm-slug').value) || '…';
     }
 
-    function showAddPageForm() {
-      document.getElementById('add-page-form-panel').style.display = 'block';
-      document.getElementById('new-page-title').value = '';
-      document.getElementById('new-page-slug').value = '';
-      document.getElementById('new-page-meta').value = '';
+    // Open the editor in "create" mode (no page-id). The View link is hidden until
+    // the page is saved (it has no public URL yet).
+    function cmsNewPage() {
+      _pmSelectedId = null;
+      document.querySelectorAll('#pages-tbody tr.pm-row').forEach(tr => tr.classList.remove('pm-selected'));
+      document.getElementById('pm-empty').style.display = 'none';
+      document.getElementById('pm-editor').style.display = 'block';
+      document.getElementById('pm-editor-title').textContent = 'New Page';
+      document.getElementById('pm-page-id').value = '';
+      document.getElementById('pm-title').value = '';
+      document.getElementById('pm-slug').value = '';
+      document.getElementById('pm-meta').value = '';
+      document.getElementById('pm-enabled').checked = true;
+      document.getElementById('pm-view-link').style.display = 'none';
+      pmRenderSections([]);
+      pmSlugPreview();
+      document.getElementById('pm-title').focus();
     }
 
-    function hideAddPageForm() {
-      document.getElementById('add-page-form-panel').style.display = 'none';
+    // Reset the detail pane to the empty placeholder.
+    function cmsClearDetail() {
+      _pmSelectedId = null;
+      const ed = document.getElementById('pm-editor');
+      const em = document.getElementById('pm-empty');
+      if (ed) ed.style.display = 'none';
+      if (em) em.style.display = 'block';
     }
 
-    async function createPage() {
-      const title = document.getElementById('new-page-title').value.trim();
-      const slug = document.getElementById('new-page-slug').value.trim();
-      const meta = document.getElementById('new-page-meta').value.trim();
-      if (!slug) { showToast('Slug is required', 'error'); return; }
-      try {
-        const res = await fetch('/admin/api/pages', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title, slug, meta_description: meta, enabled: true })
-        });
-        const data = await res.json();
-        if (!res.ok) { showToast(data.error || 'Failed to create page', 'error'); return; }
-        showToast('Page created!');
-        hideAddPageForm();
-        loadPages();
-      } catch (err) {
-        showToast('Failed to create page', 'error');
-      }
-    }
-
-    async function togglePage(id, enabled) {
+    async function cmsTogglePage(id, enabled) {
       try {
         const res = await fetch(`/admin/api/pages/${id}`, {
           method: 'PATCH',
@@ -5525,10 +5529,9 @@
         });
         if (res.ok) {
           showToast('Page visibility updated');
-          // Update cache so subsequent renders reflect the new state
-          // without a round trip.
           const cached = _pagesCache.find(p => p.id === id);
           if (cached) cached.enabled = enabled;
+          if (id === _pmSelectedId) document.getElementById('pm-enabled').checked = enabled;
         } else {
           showToast('Failed to update page', 'error');
         }
@@ -5537,37 +5540,80 @@
       }
     }
 
-    async function editPage(id) {
+    // Select a page from the list into the inline editor (master-detail, §4.2).
+    function cmsSelectPage(id) {
       const page = _pagesCache.find(p => p.id === id);
       if (!page) { showToast('Page not found', 'error'); return; }
-      // Lightweight edit via prompts — matches the existing
-      // editPageSection() pattern so the admin tooling stays consistent.
-      const title = prompt('Page title:', page.title || '');
-      if (title === null) return;
-      const slug = prompt('URL slug (used as /p/<slug>):', page.slug || '');
-      if (slug === null) return;
-      const meta = prompt('Meta description (SEO summary):', page.meta_description || '');
-      if (meta === null) return;
+      _pmSelectedId = id;
+      document.querySelectorAll('#pages-tbody tr.pm-row').forEach(tr => {
+        tr.classList.toggle('pm-selected', parseInt(tr.getAttribute('data-id'), 10) === id);
+      });
+      document.getElementById('pm-empty').style.display = 'none';
+      document.getElementById('pm-editor').style.display = 'block';
+      document.getElementById('pm-editor-title').textContent = 'Edit Page';
+      document.getElementById('pm-page-id').value = String(id);
+      document.getElementById('pm-title').value = page.title || '';
+      document.getElementById('pm-slug').value = page.slug || '';
+      document.getElementById('pm-meta').value = page.meta_description || '';
+      document.getElementById('pm-enabled').checked = !!page.enabled;
+      const link = document.getElementById('pm-view-link');
+      link.style.display = '';
+      link.href = '/p/' + page.slug;
+      pmRenderSections(page.section_ids || []);
+      pmSlugPreview();
+    }
+
+    // Save the inline editor — POST when there's no page-id, otherwise PUT. Section
+    // assignment is saved in the same flow via the /sections endpoint so the admin
+    // gets one "Save" button for the whole detail pane.
+    async function cmsSavePage() {
+      const id = document.getElementById('pm-page-id').value;
+      const title = document.getElementById('pm-title').value.trim();
+      const slug = pmSlugify(document.getElementById('pm-slug').value);
+      const meta = document.getElementById('pm-meta').value.trim();
+      const enabled = document.getElementById('pm-enabled').checked;
+      if (!slug) { showToast('Slug is required', 'error'); return; }
+      const sectionIds = pmCollectSectionIds();
       try {
-        const res = await fetch(`/admin/api/pages/${id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            title: title.trim(),
-            slug: slug.trim(),
-            meta_description: meta.trim(),
-          })
-        });
-        const data = await res.json();
-        if (!res.ok) { showToast(data.error || 'Failed to update page', 'error'); return; }
-        showToast('Page updated!');
-        loadPages();
+        let pageId = id ? parseInt(id, 10) : 0;
+        if (pageId) {
+          const res = await fetch(`/admin/api/pages/${pageId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title, slug, meta_description: meta, enabled })
+          });
+          const data = await res.json();
+          if (!res.ok) { showToast(data.error || 'Failed to save page', 'error'); return; }
+        } else {
+          const res = await fetch('/admin/api/pages', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title, slug, meta_description: meta, enabled })
+          });
+          const data = await res.json();
+          if (!res.ok) { showToast(data.error || 'Failed to create page', 'error'); return; }
+          pageId = data.id;
+        }
+        // Persist section assignment (and order). Secondary to the page save itself.
+        try {
+          await fetch(`/admin/api/pages/${pageId}/sections`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ section_ids: sectionIds })
+          });
+        } catch (_) { /* the page itself saved; sections are best-effort */ }
+        showToast('Page saved!');
+        _pmSelectedId = pageId;
+        await loadCmsPages();
+        cmsSelectPage(pageId);
       } catch (err) {
-        showToast('Failed to update page', 'error');
+        showToast('Failed to save page', 'error');
       }
     }
 
-    async function deletePage(id) {
+    async function cmsDeleteSelectedPage() {
+      const id = parseInt(document.getElementById('pm-page-id').value || '0', 10);
+      if (!id) { cmsClearDetail(); return; }
       const page = _pagesCache.find(p => p.id === id);
       const label = page ? `"${page.title || page.slug}"` : 'this page';
       if (!confirm(`Delete ${label}? This cannot be undone. The sections themselves are NOT deleted (they're shared with the homepage).`)) return;
@@ -5575,7 +5621,8 @@
         const res = await fetch(`/admin/api/pages/${id}`, { method: 'DELETE' });
         if (res.ok) {
           showToast('Page deleted');
-          loadPages();
+          cmsClearDetail();
+          loadCmsPages();
         } else {
           showToast('Failed to delete page', 'error');
         }
@@ -5584,28 +5631,26 @@
       }
     }
 
-    /* ---- Per-page section assignment editor ---- */
+    /* ---- Inline per-page section picker (master-detail right pane) ---- */
 
-    function editPageSections(id) {
-      const page = _pagesCache.find(p => p.id === id);
-      if (!page) { showToast('Page not found', 'error'); return; }
-      document.getElementById('page-sections-editor-page-id').value = String(id);
-      document.getElementById('page-sections-editor-title').textContent =
-        'Sections on "' + (page.title || page.slug) + '"';
-      // Build the picker: assigned sections first (in their saved
-      // order), then the remaining sections so admins can scroll once
-      // and tick whatever else they want without reordering everything.
-      const assigned = page.section_ids || [];
+    // Render the section checklist into the editor: assigned sections first (in saved
+    // order) so the admin can drag-reorder, then the rest. Reuses the same Sortable
+    // helper as the Page Layout tab. assignedIds = the page's current section_ids.
+    function pmRenderSections(assignedIds) {
+      const assigned = assignedIds || [];
       const assignedSet = new Set(assigned);
       const ordered = [];
       assigned.forEach(sid => {
         const s = _pageSectionsCache.find(x => x.id === sid);
         if (s) ordered.push(s);
       });
-      _pageSectionsCache.forEach(s => {
-        if (!assignedSet.has(s.id)) ordered.push(s);
-      });
-      const ul = document.getElementById('page-sections-editor-list');
+      _pageSectionsCache.forEach(s => { if (!assignedSet.has(s.id)) ordered.push(s); });
+      const ul = document.getElementById('pm-sections-list');
+      if (!ul) return;
+      if (!ordered.length) {
+        ul.innerHTML = '<li style="padding:0.6rem 0.75rem; color:var(--admin-text-muted);">No sections yet — create them on the Page Layout tab.</li>';
+        return;
+      }
       ul.innerHTML = ordered.map(s => {
         const checked = assignedSet.has(s.id) ? 'checked' : '';
         const typeLabel = s.section_type === 'built_in' ? 'Built-in' : (s.template || 'custom');
@@ -5614,55 +5659,26 @@
           <li data-section-id="${s.id}" style="display:flex; align-items:center; gap:0.75rem; padding:0.6rem 0.75rem; border-bottom:1px solid var(--admin-border);">
             <span class="drag-handle" title="Drag to reorder" style="cursor:grab; color:var(--admin-text-muted);">&#x2630;</span>
             <label style="display:flex; align-items:center; gap:0.5rem; flex:1; cursor:pointer; margin:0;">
-              <input type="checkbox" ${checked} data-section-id="${s.id}" data-testid="check-page-section-${id}-${s.id}">
+              <input type="checkbox" ${checked} data-section-id="${s.id}" data-testid="check-page-section-${s.id}">
               <span><strong>${esc(s.title || s.slug)}</strong> <span style="color:var(--admin-text-muted); font-size:0.78rem;">(${esc(s.slug)} · ${esc(typeLabel)})</span>${disabledNote}</span>
             </label>
           </li>
         `;
       }).join('');
-      // Reuse the same Sortable helper used by the Page Layout tab so
-      // the drag handles work identically (no extra setup required).
       if (typeof initSortable === 'function') {
-        try { initSortable('page-sections-editor-list', null); } catch (_) {}
+        try { initSortable('pm-sections-list', null); } catch (_) {}
       }
-      document.getElementById('page-sections-editor').style.display = 'block';
-      // Scroll the editor into view so the admin doesn't miss it on a
-      // long page.
-      document.getElementById('page-sections-editor').scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
-    function closePageSectionsEditor() {
-      document.getElementById('page-sections-editor').style.display = 'none';
-    }
-
-    async function savePageSections() {
-      const pageId = parseInt(document.getElementById('page-sections-editor-page-id').value || '0', 10);
-      if (!pageId) return;
-      // Walk the list in DOM order (which reflects any drag-reordering)
-      // and collect the IDs of every TICKED checkbox.
-      const ul = document.getElementById('page-sections-editor-list');
-      const ids = Array.from(ul.querySelectorAll('li')).map(li => {
+    // Collect ticked section IDs in DOM order (reflects any drag-reordering).
+    function pmCollectSectionIds() {
+      const ul = document.getElementById('pm-sections-list');
+      if (!ul) return [];
+      return Array.from(ul.querySelectorAll('li')).map(li => {
         const cb = li.querySelector('input[type="checkbox"]');
         if (!cb || !cb.checked) return null;
         return parseInt(cb.getAttribute('data-section-id') || '0', 10);
       }).filter(Boolean);
-      try {
-        const res = await fetch(`/admin/api/pages/${pageId}/sections`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ section_ids: ids })
-        });
-        const data = await res.json();
-        if (!res.ok) { showToast(data.error || 'Failed to save sections', 'error'); return; }
-        showToast('Sections saved!');
-        // Refresh the cache (so the row count updates) but keep the
-        // editor open so the admin can keep tweaking.
-        const cached = _pagesCache.find(p => p.id === pageId);
-        if (cached) cached.section_ids = data.section_ids || [];
-        loadPages();
-      } catch (err) {
-        showToast('Failed to save sections', 'error');
-      }
     }
 
     /* ---- Per-section background image (Task #60) ----
