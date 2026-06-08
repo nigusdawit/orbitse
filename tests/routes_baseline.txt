@@ -226,6 +226,7 @@ GET /admin/api/sphere-settings
 GET /admin/api/stripe/recent-checkouts
 GET /admin/api/stripe/settings
 GET /admin/api/stripe/sync-status
+GET /admin/api/subscriber-lists
 GET /admin/api/super-admin/audit
 GET /admin/api/super-admin/status
 GET /admin/api/team

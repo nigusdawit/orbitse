@@ -12205,8 +12205,38 @@
 
     /* ---------- SUBSCRIBERS ---------- */
 
+    // task 100 (gap §2.5): Subscribers → Lists view + opt-in KPIs from the real
+    // subscribers table (per-list counts + email/SMS opt-in % + unsub %). Fail-open.
+    async function _loadSubscriberLists() {
+      const el = document.getElementById('subscriber-lists');
+      if (!el) return;
+      try {
+        const d = await (await fetch('/admin/api/subscriber-lists', { credentials: 'same-origin' })).json();
+        const k = d.kpis || {};
+        const kpi = (l, v) => '<div class="gx-stat"><div class="gx-stat-label">' + l
+          + '</div><div class="gx-stat-value">' + escapeHtml(String(v)) + '</div></div>';
+        let html = '<div class="gx-stats" style="margin-bottom:10px;">'
+          + kpi('Subscribers', (k.total || 0).toLocaleString())
+          + kpi('Email opt-in', (k.email_pct || 0) + '%')
+          + kpi('SMS opt-in', (k.sms_pct || 0) + '%')
+          + kpi('Unsub %', (k.unsub_pct || 0) + '%') + '</div>';
+        const lists = d.lists || [];
+        if (lists.length) {
+          html += '<div style="display:flex;gap:10px;flex-wrap:wrap;">' + lists.map(L =>
+            '<div style="border:1px solid var(--admin-border);border-radius:10px;padding:10px 12px;min-width:160px;" data-testid="list-card">'
+            + '<div style="font-weight:700;">' + escapeHtml(L.name) + '</div>'
+            + '<div style="font-size:1.3rem;font-weight:800;">' + (L.total || 0).toLocaleString() + '</div>'
+            + '<div style="font-size:.72rem;color:var(--admin-text-muted);">Email ' + (L.email_pct || 0)
+            + '% · SMS ' + (L.sms_pct || 0) + '% · Unsub ' + (L.unsub_pct || 0) + '%</div></div>').join('')
+            + '</div>';
+        }
+        el.innerHTML = html;
+      } catch (_) { el.innerHTML = ''; }
+    }
+
     async function loadMessagingSubscribers() {
       loadMessagingStatus();
+      _loadSubscriberLists();   // task 100 §2.5
       const tbody = document.getElementById('subscribers-tbody');
       if (!tbody) return;
       tbody.innerHTML = '<tr><td colspan="7" class="empty-state">Loading…</td></tr>';

@@ -454,6 +454,39 @@ def admin_campaign_stats():
     return jsonify({"campaigns": campaigns, "kpis": kpis})
 
 
+@shell_bp.route("/admin/api/subscriber-lists", methods=["GET"])
+@admin_required
+def admin_subscriber_lists():
+    """Subscribers → Lists view + opt-in KPIs (task 100, gap §2.5): per-list counts +
+    email/SMS opt-in % and unsubscribe %, plus overall KPIs. Aggregate only (no
+    individual PII), so @admin_required like the Subscribers tab itself. Fail-open."""
+    out = {"lists": [], "kpis": {"total": 0, "email_pct": 0.0, "sms_pct": 0.0, "unsub_pct": 0.0}}
+    try:
+        rows = query_db(
+            "SELECT COALESCE(NULLIF(list_name,''),'default') AS list_name, COUNT(*) AS total, "
+            "       COUNT(*) FILTER (WHERE opt_in_email) AS email_in, "
+            "       COUNT(*) FILTER (WHERE opt_in_sms) AS sms_in, "
+            "       COUNT(*) FILTER (WHERE unsubscribed_at IS NOT NULL) AS unsub "
+            "FROM subscribers GROUP BY 1 ORDER BY total DESC") or []
+        lists, T, E, S, U = [], 0, 0, 0, 0
+        for r in rows:
+            t = int(r.get("total") or 0); e = int(r.get("email_in") or 0)
+            s = int(r.get("sms_in") or 0); u = int(r.get("unsub") or 0)
+            T += t; E += e; S += s; U += u
+            lists.append({"name": r.get("list_name") or "default", "total": t,
+                          "email_pct": round(100.0 * e / t, 1) if t else 0.0,
+                          "sms_pct": round(100.0 * s / t, 1) if t else 0.0,
+                          "unsub_pct": round(100.0 * u / t, 1) if t else 0.0})
+        out["lists"] = lists
+        out["kpis"] = {"total": T,
+                       "email_pct": round(100.0 * E / T, 1) if T else 0.0,
+                       "sms_pct": round(100.0 * S / T, 1) if T else 0.0,
+                       "unsub_pct": round(100.0 * U / T, 1) if T else 0.0}
+    except Exception:
+        pass
+    return jsonify(out)
+
+
 # Content tables whose edits read as "page/content changes" (not raw config churn).
 _FEED_CONTENT_TABLES = (
     "pages", "blog_posts", "page_sections", "faqs", "testimonials",
