@@ -260,6 +260,12 @@ class PylegoConfig:
     # profanity). Inert-OFF under the master kill-switch.
     safety_filter_enabled: bool
 
+    # ---- CRM segment thresholds (task 100 §2.7) -----------------------------
+    # Super-admin lead-score cutoffs for the Contacts segments: Hot >= crm_hot_min,
+    # Warm >= crm_warm_min (and < hot), New below. Amount-only (NOT in _AI_INERT).
+    crm_hot_min: int
+    crm_warm_min: int
+
     @property
     def langfuse_active(self) -> bool:
         """True only when obs is on AND real Langfuse keys are present."""
@@ -369,6 +375,9 @@ def _build() -> PylegoConfig:
         # AI guardrails — wired in 096. Inert at default (no cap, filter off).
         daily_spend_cap_usd=_env_float("DAILY_SPEND_CAP_USD", 0.0),
         safety_filter_enabled=_env_bool("SAFETY_FILTER_ENABLED", False),
+        # CRM segment thresholds — wired in 100 §2.7.
+        crm_hot_min=_env_int("CRM_HOT_MIN", 80),
+        crm_warm_min=_env_int("CRM_WARM_MIN", 50),
     )
 
 

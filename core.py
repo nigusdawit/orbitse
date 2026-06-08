@@ -3402,6 +3402,16 @@ def _ai_control_registry():
          "env": "DAILY_SPEND_CAP_USD",
          "description": "Pause ALL AI for the rest of the day once today's total spend (chat + voice + SMS) "
                         "reaches this many dollars. 0 disables. Raise or clear it here to resume immediately."},
+        # CRM segment thresholds (task 100 §2.7) — lead-score cutoffs the Contacts
+        # view uses for its Hot/Warm/New segments. Amount-only (not in _AI_INERT).
+        {"key": "crm_hot_min", "attr": "crm_hot_min", "type": "int",
+         "group": "CRM", "label": "Contacts: Hot lead-score cutoff",
+         "env": "CRM_HOT_MIN",
+         "description": "A contact is 'Hot' when its lead score is at least this (default 80)."},
+        {"key": "crm_warm_min", "attr": "crm_warm_min", "type": "int",
+         "group": "CRM", "label": "Contacts: Warm lead-score cutoff",
+         "env": "CRM_WARM_MIN",
+         "description": "A contact is 'Warm' from this score up to the Hot cutoff (default 50). Below = New."},
         # Speed / Routing (Phase 6 / task 040) — route short, simple turns to a
         # cheaper/faster model. Applies to BOTH admin + visitor chat. Off = every
         # turn uses its configured default model (no change).

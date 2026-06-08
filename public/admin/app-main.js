@@ -7783,6 +7783,7 @@
     let _contactsStats = {};
     let _contactsSeg = 'all';          // all | hot | warm | new | customers
     let _contactsSort = 'score';       // score | recent
+    let _contactsThresholds = { hot: 80, warm: 50 };   // task 100 §2.7 — from /admin/api/contacts (super-admin configurable)
     let _contactsView = [];            // currently-rendered (filtered+sorted) rows — index-addressable for Convert
     // Attribute-context escaper. esc/_esc6 (escapeHTML) escape & < > but NOT quotes,
     // so they are unsafe for an HTML ATTRIBUTE holding untrusted data. This escapes
@@ -7802,6 +7803,7 @@
         const data = await res.json();
         _contactsRows = (data && data.contacts) || [];
         _contactsStats = (data && data.stats) || {};
+        _contactsThresholds = (data && data.thresholds) || { hot: 80, warm: 50 };
         _contactsRender();
       } catch (e) { el.innerHTML = '<p class="empty-state">Failed to load.</p>'; }
     }
@@ -7809,9 +7811,11 @@
     function _contactsSegMatch(c, seg) {
       const s = c.lead_score || 0;
       const won = (c.status === 'won');   // customers are their own segment
-      if (seg === 'hot') return s >= 80 && !won;
-      if (seg === 'warm') return s >= 50 && s < 80 && !won;
-      if (seg === 'new') return s < 50 && !won;
+      const HOT = (_contactsThresholds && _contactsThresholds.hot) || 80;   // §2.7 configurable
+      const WARM = (_contactsThresholds && _contactsThresholds.warm) || 50;
+      if (seg === 'hot') return s >= HOT && !won;
+      if (seg === 'warm') return s >= WARM && s < HOT && !won;
+      if (seg === 'new') return s < WARM && !won;
       if (seg === 'customers') return won;
       return true;   // all
     }
@@ -7825,7 +7829,7 @@
       const kpi = (label, val) => '<div class="gx-stat"><div class="gx-stat-label">' + label
         + '</div><div class="gx-stat-value">' + _esc6(String(val)) + '</div></div>';
       let html = '<div class="gx-stats" style="margin-bottom:12px;">'
-        + kpi('Open leads', st.open || 0) + kpi('Hot (≥80)', st.hot || 0)
+        + kpi('Open leads', st.open || 0) + kpi('Hot (≥' + ((_contactsThresholds && _contactsThresholds.hot) || 80) + ')', st.hot || 0)
         + kpi('Avg age (days)', st.avg_age_days || 0) + kpi('Won this month', st.won_this_month || 0)
         + '</div>';
       const segs = [['all', 'All'], ['hot', 'Hot'], ['warm', 'Warm'], ['new', 'New'], ['customers', 'Customers']];

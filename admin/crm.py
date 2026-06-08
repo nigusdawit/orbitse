@@ -32,6 +32,7 @@ from core import (
     _vp_as_list,
     _iso_row,
     capture_exc,
+    get_ai_setting,
 )
 
 crm_bp = Blueprint("crm", __name__)
@@ -294,6 +295,12 @@ def admin_list_contacts():
     # Merge sort: hottest first, then most-recent activity.
     contacts.sort(key=lambda c: (c["lead_score"], c.get("last_activity") or ""), reverse=True)
     contacts = contacts[:limit]
+    # 2.7 — super-admin lead-score thresholds (configurable via AI Control → CRM group).
+    try:
+        hot_min = int(get_ai_setting("crm_hot_min") or 80)
+        warm_min = int(get_ai_setting("crm_warm_min") or 50)
+    except Exception:
+        hot_min, warm_min = 80, 50
     # 3) KPIs (§2.8) — each guarded, fail-open to 0.
     stats = {"open": 0, "hot": 0, "avg_age_days": 0, "won_this_month": 0}
     try:
@@ -311,11 +318,12 @@ def admin_list_contacts():
         capture_exc(e, "admin_list_contacts.stats")
     try:
         h = query_db("SELECT COUNT(*) AS n FROM visitor_profiles "
-                     "WHERE tenant_id=%s AND lead_score >= 80", (tid,), fetchone=True) or {}
+                     "WHERE tenant_id=%s AND lead_score >= %s", (tid, hot_min), fetchone=True) or {}
         stats["hot"] = int(h.get("n") or 0)
     except Exception as e:
         capture_exc(e, "admin_list_contacts.hot")
-    return jsonify({"contacts": contacts, "stats": stats})
+    return jsonify({"contacts": contacts, "stats": stats,
+                    "thresholds": {"hot": hot_min, "warm": warm_min}})
 
 
 @crm_bp.route("/admin/api/contacts/convert", methods=["POST"])
