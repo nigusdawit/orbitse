@@ -543,16 +543,20 @@ TO CUSTOMIZE THIS DASHBOARD:
       Stripe
     </button>
     {% endif %}
+    {# Billing (gap §6.2) — the billing VIEW is admin-visible (a client sees their own plan +
+       invoices + portal). The Stripe MANAGEMENT inside the tab is super-admin-gated in the
+       template + on every management route. #}
+    {% if is_super_admin() or feature_visible('billing') %}
+    <button class="tab-btn" onclick="switchTab('billing', this); loadBilling();" data-testid="tab-billing">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
+      Billing
+    </button>
+    {% endif %}
     {# Plans & Features is the control surface — super admin ONLY, never flag-gated. #}
     {% if is_super_admin() %}
     <button class="tab-btn" onclick="switchTab('plans-features', this); loadPlansFeatures();" data-testid="tab-plans-features">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l9 4.5v11L12 22l-9-4.5v-11L12 2z"/><path d="M3 6.5L12 11l9-4.5"/><line x1="12" y1="22" x2="12" y2="11"/></svg>
       Plans &amp; Features
-    </button>
-    {# Billing (gap §6.2) — super admin ONLY: subscription, invoices, Stripe portal. #}
-    <button class="tab-btn" onclick="switchTab('billing', this); loadBilling();" data-testid="tab-billing">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
-      Billing
     </button>
     {# WP Plugin — super admin ONLY: publish releases, keys, shareable client links. #}
     <button class="tab-btn" onclick="switchTab('wp-plugin', this); loadWpPlugin();" data-testid="tab-wp-plugin">

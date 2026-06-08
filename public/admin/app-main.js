@@ -16509,7 +16509,9 @@
        Stripe portal. Super-admin only. Everything degrades gracefully when the platform key
        is absent or the tenant isn't linked (banner explains the state). ===== */
     async function loadBilling() {
-      if (!await _superAdminGuard('tab-billing', loadBilling)) return;
+      // Visible to ANY admin — a client sees their own plan/invoices/portal. The super-admin
+      // management block is rendered only for super-admins (template-gated) and its loaders
+      // below no-op when their elements are absent.
       const planEl = document.getElementById('billing-plan');
       const invEl = document.getElementById('billing-invoices');
       const banner = document.getElementById('billing-banner');
@@ -16528,6 +16530,7 @@
         const s = document.getElementById('billing-sub-id');
         if (c) c.value = link.customer_id || '';
         if (s) s.value = link.subscription_id || '';
+        billingStripeStatus();   // super-admin management status (no-op for clients)
       } catch (e) {
         console.error('billing load failed', e);
         window.appReportError(e, 'app-main.js:loadBilling');
@@ -16622,6 +16625,80 @@
       } catch (e) {
         showToast('Could not save link', 'error');
       }
+    }
+
+    /* ----- Super-admin platform-Stripe management (no-ops for clients: their billing tab
+       has none of these elements). ----- */
+    let _billingProducts = [];
+
+    async function billingStripeStatus() {
+      const el = document.getElementById('billing-stripe-status');
+      if (!el) return;   // client / not super-admin
+      try {
+        const d = await (await fetch('/admin/api/billing/stripe', { credentials: 'same-origin' })).json();
+        const badge = d.mode === 'live' ? '<span class="bl-badge paid">LIVE</span>'
+          : (d.mode === 'test' ? '<span class="bl-badge open">TEST</span>' : '<span class="bl-badge void">not set</span>');
+        el.innerHTML = d.configured
+          ? `Platform key detected · ${badge}`
+          : '<span class="bl-bad">No platform key.</span> Add <code>PLATFORM_STRIPE_SECRET_KEY</code> to your environment, then restart.';
+      } catch (e) { el.textContent = 'Could not load status.'; }
+    }
+
+    async function billingProbe() {
+      const out = document.getElementById('billing-probe-result');
+      if (out) out.innerHTML = '<span class="bl-muted">Testing…</span>';
+      try {
+        const res = await fetch('/admin/api/billing/stripe/probe', {
+          method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: '{}',
+        });
+        const d = await res.json().catch(() => ({}));
+        if (!out) return;
+        if (d.ok) {
+          out.innerHTML = `<span class="bl-ok">✓ Connected</span> — ${escapeHTML(d.name || d.account_id || '')} `
+            + `<span class="bl-muted">(${escapeHTML(d.mode || '')}${d.charges_enabled ? ', charges enabled' : ''})</span>`;
+        } else {
+          out.innerHTML = `<span class="bl-bad">✗ ${escapeHTML(d.message || 'Connection failed')}</span>`;
+        }
+      } catch (e) { if (out) out.innerHTML = '<span class="bl-bad">✗ Connection failed</span>'; }
+    }
+
+    async function billingLoadProducts() {
+      const wrap = document.getElementById('billing-plan-map');
+      if (wrap) wrap.innerHTML = '<span class="bl-muted">Loading…</span>';
+      try {
+        const d = await (await fetch('/admin/api/billing/stripe/products', { credentials: 'same-origin' })).json();
+        _billingProducts = d.products || [];
+        const plans = d.plans || [];
+        if (!wrap) return;
+        if (!d.configured) { wrap.innerHTML = '<span class="bl-muted">Add <code>PLATFORM_STRIPE_SECRET_KEY</code> to load products.</span>'; return; }
+        if (!plans.length) { wrap.innerHTML = '<span class="bl-muted">No plans defined.</span>'; return; }
+        const opts = (selId) => '<option value="">— none —</option>' + _billingProducts.map(p => {
+          const label = `${p.product_name || p.nickname || p.price_id} · ${_billingMoney(p.amount, p.currency)}${p.interval ? '/' + p.interval : ''}`;
+          return `<option value="${escapeHTML(p.price_id)}"${p.price_id === selId ? ' selected' : ''}>${escapeHTML(label)}</option>`;
+        }).join('');
+        wrap.innerHTML = plans.map(pl => `
+          <div class="bl-map-row">
+            <span class="bl-plan-label">${escapeHTML(pl.name || pl.code)}</span>
+            <select data-plan="${escapeHTML(pl.code)}" onchange="billingMapPlan(this)" data-testid="select-plan-price-${escapeHTML(pl.code)}">${opts(pl.stripe_price_id || '')}</select>
+            ${_billingProducts.length ? '' : '<span class="bl-muted">No recurring prices in Stripe yet.</span>'}
+          </div>
+        `).join('');
+      } catch (e) { if (wrap) wrap.innerHTML = '<span class="bl-bad">Could not load products.</span>'; }
+    }
+
+    async function billingMapPlan(sel) {
+      const plan = sel.getAttribute('data-plan');
+      const priceId = sel.value || '';
+      const prod = _billingProducts.find(p => p.price_id === priceId);
+      try {
+        const res = await fetch('/admin/api/billing/plan-price', {
+          method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ plan_code: plan, stripe_price_id: priceId, stripe_product_id: prod ? prod.product_id : '' }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (res.ok && d.success) showToast('Plan mapping saved');
+        else showToast(d.message || 'Could not save mapping', 'error');
+      } catch (e) { showToast('Could not save mapping', 'error'); }
     }
 
     function renderPlansFeaturesTenant(data, el) {

@@ -160,10 +160,11 @@ def _tenant_billing_row(tid):
 def admin_billing():
     """Current plan (always, from the DB) + — when PLATFORM_STRIPE_SECRET_KEY is set AND the
     tenant is linked — live subscription status + recent invoices from the platform Stripe
-    account. Fail-open: any missing-key / not-linked / Stripe error degrades to a flag."""
-    _guard = _require_super_admin_role()
-    if _guard is not None:
-        return _guard
+    account. Fail-open: any missing-key / not-linked / Stripe error degrades to a flag.
+
+    Visible to ANY admin: a client sees their OWN tenant's plan/invoices/portal (scoped by
+    current_tenant_id). The management surface (test connection, products, linking) is a
+    separate super-admin-only concern — see the routes below."""
     try:
         tid = current_tenant_id()
         row = _tenant_billing_row(tid)
@@ -231,10 +232,8 @@ def admin_billing():
 @admin_required
 def admin_billing_portal():
     """Create a Stripe billing-portal session for this tenant's platform customer so the
-    operator can manage payment method / view invoices in Stripe. Returns {url}."""
-    _guard = _require_super_admin_role()
-    if _guard is not None:
-        return _guard
+    admin (the client themselves) can manage payment method / view invoices in Stripe.
+    Returns {url}. Visible to any admin — it's their own subscription."""
     if not _billing_configured():
         return jsonify({"error": "not_configured",
                         "message": "Add PLATFORM_STRIPE_SECRET_KEY to enable the billing portal."}), 400
@@ -284,3 +283,138 @@ def admin_billing_link():
         capture_exc(e, "tenancy.admin_billing_link")
         print(f"[billing] link failed: {e}")
         return jsonify({"error": "link_failed", "detail": str(e)}), 500
+
+
+# --- Platform Stripe management (gap §6.2, SUPER-ADMIN only) ------------------
+# The super admin manages the PLATFORM Stripe integration here — test the connection, see
+# test/live mode, list the account's products/prices, and map plans to a Stripe price. This
+# is the platform owner's concern (separate from each client's order-checkout Stripe console),
+# so every route is super-admin gated. Everything is read-only against Stripe except the
+# local plan↔price mapping; nothing is created in Stripe.
+
+def _platform_stripe_mode():
+    """test/live from the platform key prefix; 'none' if unset, 'unknown' if unrecognized."""
+    k = _platform_stripe_key()
+    if not k:
+        return "none"
+    if k.startswith("sk_live_") or k.startswith("rk_live_"):
+        return "live"
+    if k.startswith("sk_test_") or k.startswith("rk_test_"):
+        return "test"
+    return "unknown"
+
+
+def _plans_with_mapping():
+    return [dict(p) for p in (query_db(
+        "SELECT slug AS code, name, stripe_price_id, stripe_product_id, price_display "
+        "FROM plans ORDER BY sort_order, id"
+    ) or [])]
+
+
+@tenancy_bp.route("/admin/api/billing/stripe", methods=["GET"])
+@admin_required
+def admin_billing_stripe_status():
+    """Super-admin: platform Stripe integration status (key present + test/live mode). No network."""
+    _guard = _require_super_admin_role()
+    if _guard is not None:
+        return _guard
+    return jsonify({
+        "configured": _billing_configured(),
+        "key_present": bool(_platform_stripe_key()),
+        "sdk_present": bool(_stripe),
+        "mode": _platform_stripe_mode(),
+    })
+
+
+@tenancy_bp.route("/admin/api/billing/stripe/probe", methods=["POST"])
+@admin_required
+def admin_billing_stripe_probe():
+    """Super-admin: test the platform Stripe connection via Account.retrieve. Read-only. A bad
+    key returns 200 {ok:false} (it's an expected test outcome, not a server error)."""
+    _guard = _require_super_admin_role()
+    if _guard is not None:
+        return _guard
+    if not _billing_configured():
+        return jsonify({"ok": False, "error": "not_configured",
+                        "message": "Add PLATFORM_STRIPE_SECRET_KEY to test the platform connection."}), 400
+    try:
+        acct = _stripe.Account.retrieve(api_key=_platform_stripe_key())
+        bp = acct.get("business_profile") or {}
+        dash = (acct.get("settings") or {}).get("dashboard") or {}
+        name = dash.get("display_name") or bp.get("name") or acct.get("email") or acct.get("id") or ""
+        return jsonify({
+            "ok": True,
+            "account_id": acct.get("id") or "",
+            "name": name,
+            "email": acct.get("email") or "",
+            "mode": _platform_stripe_mode(),
+            "charges_enabled": bool(acct.get("charges_enabled")),
+        })
+    except Exception as e:
+        print(f"[billing] platform probe failed: {e}")
+        return jsonify({"ok": False, "error": "probe_failed",
+                        "message": "Stripe rejected the platform key. Check PLATFORM_STRIPE_SECRET_KEY."})
+
+
+@tenancy_bp.route("/admin/api/billing/stripe/products", methods=["GET"])
+@admin_required
+def admin_billing_stripe_products():
+    """Super-admin: list the platform account's active prices (+ their product) plus the app's
+    plans with their current mapping, so the super admin can map plan ↔ price. Read-only."""
+    _guard = _require_super_admin_role()
+    if _guard is not None:
+        return _guard
+    if not _billing_configured():
+        return jsonify({"configured": False, "products": [], "plans": _plans_with_mapping()})
+    try:
+        prices = _stripe.Price.list(active=True, limit=50, expand=["data.product"],
+                                    api_key=_platform_stripe_key())
+        out = []
+        for pr in (prices.get("data") or []):
+            prod = pr.get("product")
+            is_obj = isinstance(prod, dict)
+            rec = pr.get("recurring") or {}
+            out.append({
+                "price_id": pr.get("id") or "",
+                "product_id": (prod.get("id") if is_obj else str(prod or "")),
+                "product_name": (prod.get("name") if is_obj else ""),
+                "amount": pr.get("unit_amount"),
+                "currency": (pr.get("currency") or "usd").upper(),
+                "interval": rec.get("interval") or "",
+                "nickname": pr.get("nickname") or "",
+            })
+        return jsonify({"configured": True, "products": out, "plans": _plans_with_mapping()})
+    except Exception as e:
+        print(f"[billing] platform products failed: {e}")
+        return jsonify({"configured": True, "products": [], "plans": _plans_with_mapping(),
+                        "error": "Could not list products from the platform account."})
+
+
+@tenancy_bp.route("/admin/api/billing/plan-price", methods=["POST"])
+@admin_required
+def admin_billing_plan_price():
+    """Super-admin: map a plan to a platform Stripe price (+ its product). Stores the ids on the
+    plan; no Stripe call. Blank price clears the mapping."""
+    _guard = _require_super_admin_role()
+    if _guard is not None:
+        return _guard
+    body = request.get_json(silent=True) or {}
+    plan_code = str(body.get("plan_code") or "").strip()
+    price_id = str(body.get("stripe_price_id") or "").strip()
+    product_id = str(body.get("stripe_product_id") or "").strip()
+    if not plan_code:
+        return jsonify({"error": "missing_plan", "message": "plan_code is required."}), 400
+    if price_id and not price_id.startswith("price_"):
+        return jsonify({"error": "bad_price_id", "message": "Stripe price ids start with 'price_'."}), 400
+    try:
+        n = execute_db(
+            "UPDATE plans SET stripe_price_id=%s, stripe_product_id=%s WHERE slug=%s",
+            (price_id, product_id, plan_code),
+        )
+        if not n:
+            return jsonify({"error": "unknown_plan", "message": f"No plan with code {plan_code!r}."}), 404
+        return jsonify({"success": True, "plan_code": plan_code, "stripe_price_id": price_id})
+    except Exception as e:
+        capture_exc(e, "tenancy.admin_billing_plan_price")
+        print(f"[billing] plan-price map failed: {e}")
+        return jsonify({"error": "map_failed", "detail": str(e)}), 500

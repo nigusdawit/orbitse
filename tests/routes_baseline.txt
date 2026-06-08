@@ -88,6 +88,8 @@ GET /admin/api/automations/metadata
 GET /admin/api/automations/runs/<int:rid>
 GET /admin/api/automations/settings
 GET /admin/api/billing
+GET /admin/api/billing/stripe
+GET /admin/api/billing/stripe/products
 GET /admin/api/blog
 GET /admin/api/bookings
 GET /admin/api/business-info
@@ -356,7 +358,9 @@ POST /admin/api/automations/<int:aid>/versions/<int:vid>/restore
 POST /admin/api/automations/import
 POST /admin/api/automations/runs/<int:rid>/rerun
 POST /admin/api/billing/link
+POST /admin/api/billing/plan-price
 POST /admin/api/billing/portal
+POST /admin/api/billing/stripe/probe
 POST /admin/api/blog
 POST /admin/api/chat/action/<int:action_id>/approve
 POST /admin/api/chat/action/<int:action_id>/reject
