@@ -16701,6 +16701,108 @@
       } catch (e) { showToast('Could not save mapping', 'error'); }
     }
 
+    /* ===== Team & Roles (gap §6.3) — admin user accounts, roles, invites. Super-admin. ===== */
+    const _TR_ROLES = ['super_admin', 'admin', 'editor'];
+
+    async function loadTeamRoles() {
+      if (!await _superAdminGuard('tab-team-roles', loadTeamRoles)) return;
+      const tbody = document.getElementById('tr-users-tbody');
+      if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="empty-state">Loading…</td></tr>';
+      try {
+        const d = await (await fetch('/admin/api/admin-users', { credentials: 'same-origin' })).json();
+        _trRenderUsers(d.users || []);
+      } catch (e) {
+        if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="empty-state" style="color:#ef4444;">Could not load users.</td></tr>';
+      }
+    }
+
+    function _trRenderUsers(users) {
+      const tbody = document.getElementById('tr-users-tbody');
+      if (!tbody) return;
+      if (!users.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No admins invited yet. Invite one above.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = users.map(u => {
+        const roleSel = `<select onchange="trSetRole(${u.id}, this.value)" data-testid="role-${u.id}">`
+          + _TR_ROLES.map(r => `<option value="${r}"${u.role === r ? ' selected' : ''}>${r}</option>`).join('') + '</select>';
+        const st = u.status || 'invited';
+        const last = u.last_login_at ? escapeHTML(String(u.last_login_at).slice(0, 16).replace('T', ' ')) : '—';
+        const toggle = st === 'disabled'
+          ? `<button class="btn btn-secondary btn-sm" onclick="trSetStatus(${u.id}, 'active')">Enable</button>`
+          : `<button class="btn btn-secondary btn-sm" onclick="trSetStatus(${u.id}, 'disabled')">Disable</button>`;
+        return `<tr>
+          <td>${escapeHTML(u.email || '')}</td>
+          <td>${escapeHTML(u.name || '')}</td>
+          <td>${roleSel}</td>
+          <td><span class="tr-badge ${escapeHTML(st)}">${escapeHTML(st)}</span></td>
+          <td>${last}</td>
+          <td class="cell-actions">${toggle}
+            <button class="btn btn-danger btn-sm" onclick="trDelete(${u.id}, '${_attrEsc(u.email || '')}')">Remove</button>
+          </td>
+        </tr>`;
+      }).join('');
+    }
+
+    async function trInvite() {
+      const email = (document.getElementById('tr-invite-email').value || '').trim();
+      const name = (document.getElementById('tr-invite-name').value || '').trim();
+      const role = document.getElementById('tr-invite-role').value || 'admin';
+      if (!email) { showToast('Email is required', 'error'); return; }
+      try {
+        const res = await fetch('/admin/api/admin-users/invite', {
+          method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, name, role }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok || !d.success) { showToast(d.message || 'Could not send invite', 'error'); return; }
+        showToast(d.emailed ? 'Invite emailed' : 'Invite created');
+        document.getElementById('tr-invite-email').value = '';
+        document.getElementById('tr-invite-name').value = '';
+        const box = document.getElementById('tr-invite-result');
+        if (box) box.innerHTML = `<div class="tr-link">
+          <input type="text" readonly value="${_attrEsc(d.invite_url || '')}" onclick="this.select()" data-testid="text-invite-url">
+          <button class="btn btn-secondary btn-sm" onclick="trCopy(this)">Copy link</button>
+        </div><p class="tr-muted" style="margin:0.4rem 0 0;">${d.emailed ? 'Also emailed to ' + escapeHTML(email) + '. ' : ''}Link expires in 7 days, single use.</p>`;
+        loadTeamRoles();
+      } catch (e) { showToast('Could not send invite', 'error'); }
+    }
+
+    function trCopy(btn) {
+      const inp = btn.parentNode.querySelector('input');
+      if (!inp) return;
+      inp.select();
+      try { navigator.clipboard.writeText(inp.value); showToast('Copied'); }
+      catch (e) { try { document.execCommand('copy'); showToast('Copied'); } catch (_) {} }
+    }
+
+    function trSetRole(uid, role) { _trPatch(uid, { role }); }
+    function trSetStatus(uid, status) { _trPatch(uid, { status }); }
+
+    async function _trPatch(uid, body) {
+      try {
+        const res = await fetch(`/admin/api/admin-users/${uid}`, {
+          method: 'PATCH', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (res.ok && d.success) showToast('Saved');
+        else showToast(d.message || 'Could not update', 'error');
+      } catch (e) { showToast('Could not update', 'error'); }
+      loadTeamRoles();
+    }
+
+    async function trDelete(uid, email) {
+      if (!confirm(`Remove ${email || 'this admin'}? They will lose access.`)) return;
+      try {
+        const res = await fetch(`/admin/api/admin-users/${uid}`, { method: 'DELETE', credentials: 'same-origin' });
+        const d = await res.json().catch(() => ({}));
+        if (res.ok && d.success) showToast('Removed');
+        else showToast(d.message || 'Could not remove', 'error');
+      } catch (e) { showToast('Could not remove', 'error'); }
+      loadTeamRoles();
+    }
+
     function renderPlansFeaturesTenant(data, el) {
       if (!el) return;
       const t = data.tenant || {};

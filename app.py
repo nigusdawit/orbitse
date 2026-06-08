@@ -6742,13 +6742,25 @@ def admin_login():
             )
             return resp, 429, {"Retry-After": str(retry_after)}
         password = request.form.get("password", "")
+        email = (request.form.get("email", "") or "").strip().lower()
         # Two credentials, one form. ADMIN_PASSWORD → super_admin (full panel +
         # control tab); CLIENT_PASSWORD → client (only enabled tabs). super_admin
         # wins if the two passwords happen to be equal. We always overwrite
         # admin_role on success so a shared browser can't carry a stale role from
         # a previous login of the other kind.
         role = None
-        if password == ADMIN_PASSWORD:
+        rbac_user = None
+        # RBAC (gap §6.3): if an email is supplied, try per-user accounts FIRST. Strictly
+        # additive + fail-safe — any miss or error falls through to the unchanged
+        # ADMIN_PASSWORD / CLIENT_PASSWORD flow below, which stays the break-glass login.
+        if email:
+            try:
+                rbac_user = rbac_authenticate(email, password)
+            except Exception:
+                rbac_user = None
+        if rbac_user is not None:
+            role = rbac_user.get("role") or "admin"
+        elif password == ADMIN_PASSWORD:
             role = "super_admin"
         elif CLIENT_PASSWORD and password == CLIENT_PASSWORD:
             role = "client"
@@ -6756,6 +6768,16 @@ def admin_login():
             _login_throttle_clear(ip)
             session["admin_logged_in"] = True
             session["admin_role"] = role
+            if rbac_user is not None:
+                session["admin_user_id"] = rbac_user.get("id")
+                session["admin_email"] = rbac_user.get("email")
+                try:
+                    rbac_note_login(rbac_user.get("id"))
+                except Exception:
+                    pass
+            else:
+                session.pop("admin_user_id", None)
+                session.pop("admin_email", None)
             session.permanent = True
             return redirect(url_for("admin_dashboard"))
         else:
@@ -6774,6 +6796,8 @@ def admin_logout():
         _audit_super_admin("auto_lock", "logout")
     session.pop("admin_logged_in", None)
     session.pop("admin_role", None)
+    session.pop("admin_user_id", None)
+    session.pop("admin_email", None)
     session.pop("_csrf_token", None)
     session.pop("super_admin_unlocked_at", None)
     return redirect(url_for("admin_login"))
@@ -7045,7 +7069,10 @@ def super_admin_audit_list():
 #                                         is set)
 #   - GET / HEAD / OPTIONS               (idempotent by HTTP contract)
 _CSRF_PROTECTED_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
-_CSRF_EXEMPT_PATHS = {"/admin/login", "/admin/logout"}
+# /admin/api/join is exempt because it carries no session — the single-use invite TOKEN in
+# the body is the authentication (like a password-reset link), so a session CSRF token can't
+# exist yet. The token's high entropy + single-use + expiry are the protection. (RBAC §6.3)
+_CSRF_EXEMPT_PATHS = {"/admin/login", "/admin/logout", "/admin/api/join"}
 
 
 def _csrf_token():
@@ -43137,6 +43164,11 @@ app.register_blueprint(shell_bp)
 # imports it cleanly. Registered like the other admin blueprints.
 from admin.tenancy import tenancy_bp  # noqa: E402
 app.register_blueprint(tenancy_bp)
+
+# RBAC (gap §6.3, Phase 1): multi-user admin accounts + invites. The login route below
+# calls rbac_authenticate additively; the management/invite/join routes live in the blueprint.
+from admin.rbac import rbac_bp, rbac_authenticate, rbac_note_login  # noqa: E402
+app.register_blueprint(rbac_bp)
 
 # AI prompts blueprint (Track B / task 078, piece #1): the super-admin editable
 # system-prompt API — GET /admin/api/ai-prompts (list), PUT /admin/api/ai-prompts/<key>

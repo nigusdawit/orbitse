@@ -133,14 +133,18 @@ Default for development: "admin"
 <body>
   <div class="login-card">
     <h1>Admin Dashboard</h1>
-    <p>Enter your password to continue.</p>
+    <p>Sign in with your email and password — or just the master password.</p>
     {% if error %}
     <div class="error">{{ error }}</div>
     {% endif %}
     <form method="POST" action="/admin/login">
       <div class="form-group">
+        <label for="email">Email <span style="text-transform:none; letter-spacing:0; opacity:0.55;">— optional</span></label>
+        <input type="email" id="email" name="email" autocomplete="username" autofocus placeholder="you@example.com">
+      </div>
+      <div class="form-group">
         <label for="password">Password</label>
-        <input type="password" id="password" name="password" required autofocus placeholder="Enter admin password">
+        <input type="password" id="password" name="password" required autocomplete="current-password" placeholder="Your password">
       </div>
       <button type="submit" class="btn-login">Log In</button>
     </form>

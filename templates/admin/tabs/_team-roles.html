@@ -1,0 +1,61 @@
+{# admin/tabs/_team-roles.html — Team & Roles (gap §6.3, RBAC Phase 1). Super-admin only.
+   Invite admins, set roles (super_admin/admin/editor), enable/disable, remove. Your
+   ADMIN_PASSWORD stays a master login. Scoped CSS under #tab-team-roles, --admin-* vars. #}
+<div id="tab-team-roles" class="tab-content">
+  <style>
+    #tab-team-roles .tr-card { border:1px solid var(--admin-border); border-radius:12px; background:var(--admin-card-bg, var(--admin-bg)); overflow:hidden; }
+    #tab-team-roles .tr-card-h { padding:0.75rem 1rem; border-bottom:1px solid var(--admin-border); font-weight:600; }
+    #tab-team-roles .tr-card-b { padding:1rem; }
+    #tab-team-roles .tr-muted { color:var(--admin-text-muted); font-size:0.82rem; }
+    #tab-team-roles .tr-form { display:flex; flex-wrap:wrap; gap:0.75rem; align-items:end; }
+    #tab-team-roles .tr-form label { display:flex; flex-direction:column; gap:0.25rem; font-size:0.8rem; }
+    #tab-team-roles .tr-form input, #tab-team-roles select { padding:0.45rem 0.6rem; border:1px solid var(--admin-border); border-radius:8px; background:var(--admin-input-bg, transparent); color:var(--admin-text); }
+    #tab-team-roles .tr-link { margin-top:0.85rem; padding:0.6rem 0.75rem; border:1px dashed var(--admin-border); border-radius:8px; display:flex; gap:0.5rem; align-items:center; }
+    #tab-team-roles .tr-link input { flex:1; font-family:monospace; font-size:0.8rem; }
+    #tab-team-roles table { width:100%; }
+    #tab-team-roles .tr-badge { display:inline-block; padding:1px 8px; border-radius:6px; font-size:0.74rem; font-weight:600; }
+    #tab-team-roles .tr-badge.active { background:rgba(22,101,52,0.18); color:#22c55e; }
+    #tab-team-roles .tr-badge.invited { background:rgba(146,64,14,0.18); color:#f59e0b; }
+    #tab-team-roles .tr-badge.disabled { background:rgba(127,29,29,0.18); color:#ef4444; }
+  </style>
+
+  <div class="section-header-admin">
+    <div>
+      <h2>Team &amp; Roles</h2>
+      <p>Invite admins, set their role, and enable/disable accounts. Your <code>ADMIN_PASSWORD</code> always works as a master login, so you can't be locked out.</p>
+    </div>
+  </div>
+
+  <div class="tr-card">
+    <div class="tr-card-h">Invite an admin</div>
+    <div class="tr-card-b">
+      <div class="tr-form">
+        <label>Email
+          <input type="email" id="tr-invite-email" placeholder="person@company.com" data-testid="input-invite-email">
+        </label>
+        <label>Name
+          <input type="text" id="tr-invite-name" placeholder="optional">
+        </label>
+        <label>Role
+          <select id="tr-invite-role" data-testid="select-invite-role">
+            <option value="admin">admin</option>
+            <option value="editor">editor</option>
+            <option value="super_admin">super_admin</option>
+          </select>
+        </label>
+        <button class="btn btn-primary" onclick="trInvite()" data-testid="button-invite">Send invite</button>
+      </div>
+      <p class="tr-muted" style="margin:0.6rem 0 0;">If email (Resend) is configured the link is emailed; either way you get a copyable link below.</p>
+      <div id="tr-invite-result"></div>
+    </div>
+  </div>
+
+  <table class="data-table" id="tr-users-table" style="margin-top:1.25rem;">
+    <thead>
+      <tr><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>Last login</th><th>Actions</th></tr>
+    </thead>
+    <tbody id="tr-users-tbody">
+      <tr><td colspan="6" class="empty-state">Loading…</td></tr>
+    </tbody>
+  </table>
+</div>
