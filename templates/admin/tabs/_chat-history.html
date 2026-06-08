@@ -54,10 +54,11 @@
 
     <style>
       /* 095 §2.4 inbox — scoped to #tab-chat-history so nothing leaks to other tabs. */
-      #tab-chat-history .gxi-inbox{ display:grid; grid-template-columns:280px 1fr 320px; gap:0;
+      #tab-chat-history .gxi-inbox{ display:grid; grid-template-columns:280px 1fr 320px;
+        grid-template-rows:minmax(0, 1fr); gap:0;
         border:1px solid var(--admin-border); border-radius:14px; overflow:hidden; margin-top:1rem;
         height:min(620px, calc(100vh - 320px)); background:var(--admin-surface); }
-      #tab-chat-history .gxi-threads{ border-right:1px solid var(--admin-border); overflow-y:auto; }
+      #tab-chat-history .gxi-threads{ border-right:1px solid var(--admin-border); overflow-y:auto; min-height:0; }
       #tab-chat-history .gxi-thread{ display:block; width:100%; text-align:left; border:0; background:none;
         font:inherit; cursor:pointer; padding:.6rem .75rem; border-bottom:1px solid var(--admin-border);
         color:var(--admin-text); }
@@ -71,10 +72,10 @@
       #tab-chat-history .gxi-dot{ width:8px; height:8px; border-radius:50%; flex:none; background:#22c55e; }
       #tab-chat-history .gxi-chip{ font-size:.6rem; font-weight:700; text-transform:uppercase; letter-spacing:.04em;
         padding:0 .35em; border-radius:999px; background:var(--admin-warning,#f59e0b); color:#000; }
-      #tab-chat-history .gxi-transcript-pane{ display:flex; flex-direction:column; min-width:0; }
+      #tab-chat-history .gxi-transcript-pane{ display:flex; flex-direction:column; min-width:0; min-height:0; }
       #tab-chat-history .gxi-transcript-head{ padding:.5rem .75rem; border-bottom:1px solid var(--admin-border);
         font-size:.8rem; color:var(--admin-text-muted); min-height:1.2rem; }
-      #tab-chat-history .gxi-msgs{ flex:1 1 auto; overflow-y:auto; padding:.75rem; }
+      #tab-chat-history .gxi-msgs{ flex:1 1 auto; min-height:0; overflow-y:auto; padding:.75rem; }
       #tab-chat-history .gxi-msg{ margin-bottom:.6rem; }
       #tab-chat-history .gxi-msg-role{ font-size:.62rem; text-transform:uppercase; letter-spacing:.05em;
         color:var(--admin-text-muted); margin-bottom:.15rem; }
@@ -88,7 +89,7 @@
       #tab-chat-history .gxi-composer textarea{ width:100%; resize:vertical; border:1px solid var(--admin-border);
         border-radius:9px; background:var(--admin-surface); color:var(--admin-text); font:inherit; font-size:.85rem; padding:.5rem; }
       #tab-chat-history .gxi-composer-actions{ display:flex; justify-content:flex-end; gap:.5rem; margin-top:.5rem; }
-      #tab-chat-history .gxi-context{ border-left:1px solid var(--admin-border); overflow-y:auto; padding:.85rem; }
+      #tab-chat-history .gxi-context{ border-left:1px solid var(--admin-border); overflow-y:auto; min-height:0; padding:.85rem; }
       #tab-chat-history .gxi-ctx-card{ margin-bottom:.85rem; }
       #tab-chat-history .gxi-ctx-h{ font-size:.65rem; font-weight:800; letter-spacing:.06em; text-transform:uppercase;
         color:var(--admin-text-muted); margin-bottom:.3rem; }
