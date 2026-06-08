@@ -6,8 +6,12 @@ description: Role gate + feature-route prefix for an admin tab's action endpoint
 When an admin tab is client-visible (shown via `feature_visible('<flag>')` in the
 dashboard template), the **action endpoints** inside that tab must be usable by the
 same audience — i.e. `@admin_required` only, not `_require_super_admin_role()`.
-Keep super-admin gating only on genuinely sensitive sub-actions (e.g. endpoints
-that expose visitor PII / CRM lead data).
+
+The Chat History inbox's **visitor context** side-panel endpoint
+(`/admin/api/conversations/<id>/context`) is `@admin_required` (NOT super-admin) by
+explicit user decision — in this single-tenant template the admin IS the operator
+and needs lead score / interests / source / linked-lead to handle a chat. Do not
+re-gate it to super-admin. The frontend's 403 branch is now defensive only.
 
 **Why:** A client-visible inbox once had its reply/takeover endpoints gated to
 super-admin only, so client admins saw the composer but every action 403'd with a

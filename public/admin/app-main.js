@@ -2403,8 +2403,9 @@
     const viewConversation = openConversation;
 
     // Fetch + render the RIGHT context panel for a conversation (lead score, detected
-    // intent, traffic source, linked CRM contact). Super-admin only on the server —
-    // a 403 simply shows a muted note rather than erroring. Fail-open throughout.
+    // intent, traffic source, linked CRM contact). Available to any logged-in admin —
+    // a 403 (defensive only) simply shows a muted note rather than erroring.
+    // Fail-open throughout.
     async function loadConversationContext(convId) {
       const el = document.getElementById('inbox-context');
       if (!el) return;
@@ -2413,7 +2414,7 @@
         const res = await fetch(`/admin/api/conversations/${convId}/context`, { credentials: 'same-origin' });
         if (_inboxActiveConv !== convId) return;   // stale — a newer conversation was opened mid-fetch
         if (res.status === 403) {
-          el.innerHTML = '<div class="gxi-ctx-muted" style="padding:.5rem;">Visitor context is super-admin only.</div>';
+          el.innerHTML = '<div class="gxi-ctx-muted" style="padding:.5rem;">Visitor context is unavailable.</div>';
           return;
         }
         const d = await res.json();

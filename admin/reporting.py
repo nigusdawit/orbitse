@@ -23,7 +23,6 @@ from core import (
     query_db,
     execute_db,
     admin_required,
-    _require_super_admin_role,
     current_tenant_id,
     _vp_as_list,
     capture_exc,
@@ -92,15 +91,15 @@ def admin_chat_detail(conv_id):
 @reporting_bp.route("/admin/api/conversations/<int:conv_id>/context", methods=["GET"])
 @admin_required
 def admin_conversation_context(conv_id):
-    """Side-panel context for a conversation (task 095, gap §2.4). SUPER-ADMIN only
-    (visitor PII). Returns the visitor_profile (lead_score / interests / needs / summary
-    — 'intent' ≈ interests+needs, the closest existing signal), a derived source channel
-    (latest page_views utm/referrer for the visitor), and the linked lead, if any. Each
+    """Side-panel context for a conversation (task 095, gap §2.4). Available to any
+    logged-in admin who can open the Chat History inbox — the visitor context is part
+    of handling a conversation, so it shares the same audience as the inbox itself
+    (single-tenant template, no cross-tenant boundary to protect). Returns the
+    visitor_profile (lead_score / interests / needs / summary — 'intent' ≈
+    interests+needs, the closest existing signal), a derived source channel (latest
+    page_views utm/referrer for the visitor), and the linked lead, if any. Each
     section is independently try/except'd → a missing profile/lead/source yields an empty
     section, never a 500."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
     conv = query_db("SELECT id, visitor_id FROM chat_conversations WHERE id=%s", (conv_id,), fetchone=True)
     if not conv:
         return jsonify({"error": "Conversation not found"}), 404
@@ -159,8 +158,8 @@ def admin_conversation_context(conv_id):
 # Available to any admin who can open the Chat History inbox (the tab is shown
 # to clients via the `chat_history` feature, so the actions inside it must be
 # usable by the same audience — replying is the core action of an inbox). The
-# visitor PII context panel above stays super-admin only. Conversations are not
-# tenant-scoped (single-tenant template), so there is no cross-tenant boundary
+# visitor context panel above shares this same admin audience. Conversations are
+# not tenant-scoped (single-tenant template), so there is no cross-tenant boundary
 # to protect here.
 # Pausing the AI for a conversation is stored in conversation_takeover. The live
 # /api/chat SSE generator reads ai_paused at the top of generate() and, if set,
