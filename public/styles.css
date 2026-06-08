@@ -7817,3 +7817,36 @@ html.aap-widget #chatbot-bar {
 html.aap-widget #chatbot-panel {
   max-height: calc(var(--aap-host-vh, 640px) * 0.72) !important;
 }
+
+/* SHADE FIX — every floating surface sits on a transparent iframe over an
+   arbitrary host page, and the embed loader CLIPS the iframe tightly to each
+   surface's box (so the host page stays clickable around them). A big soft
+   drop-shadow then (a) reads as a grey halo over a light host and (b) gets hard-
+   cut by that clip into an ugly rectangular "shade". So drop the shadows on the
+   concierge's own floating surfaces in widget mode — only the surfaces
+   themselves should show. (#chatbot-bar is already handled above.) */
+html.aap-widget #chatbot-panel,
+html.aap-widget #side-chat-panel,
+html.aap-widget .voice-intro-card,
+html.aap-widget .page-archive-bubble,
+html.aap-widget .page-archive-bubble-btn,
+html.aap-widget .page-archive-popover {
+  box-shadow: none !important;
+}
+
+/* FLICKER FIX — the loader resizes + re-clips the iframe to hug whichever
+   surfaces are currently open. If those surfaces slide/fade in over several
+   frames (transitions), the clip chases them frame-by-frame and the edges
+   flicker/glitch as the user opens/closes the panel or the saved-pages popover.
+   In widget mode show/hide them INSTANTLY so the iframe resizes and re-clips in
+   a single step — no chasing, no flicker. This only disables layout TRANSITIONS;
+   keyframe animations (e.g. the typing dots) are left intact. The main site is
+   unaffected — these rules are scoped to html.aap-widget. */
+html.aap-widget #chatbot-bar,
+html.aap-widget #chatbot-panel,
+html.aap-widget #side-chat-panel,
+html.aap-widget .voice-intro-card,
+html.aap-widget .page-archive-bubble,
+html.aap-widget .page-archive-popover {
+  transition: none !important;
+}

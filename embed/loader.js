@@ -148,7 +148,10 @@
       "background:transparent",
       "color-scheme:normal",
       "z-index:2147482000",
-      "transition:height .18s ease"
+      // No height transition: the iframe is clip-path'd to its surfaces, and an
+      // animated height would lag the (instant) clip — revealing/cutting content
+      // edges mid-animation, which reads as flicker. Resize instantly instead.
+      "transition:none"
     ].join(";");
     document.body.appendChild(iframe);
 
