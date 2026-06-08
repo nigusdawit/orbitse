@@ -42,6 +42,7 @@
   var MSG = "aap-widget";       // message namespace
   var lastState = null;         // "collapsed" | "expanded"
   var lastH = 0;               // last reported band height
+  var lastSig = "";            // signature of the last reported surface rects
 
   // The non-modal floating surfaces, by id. The iframe's bottom band is sized to
   // hug whichever of these are currently visible. All of them are bottom-anchored
@@ -118,20 +119,59 @@
     return band;
   }
 
+  // Bounding rects (in iframe-viewport px) of each VISIBLE floating surface, so
+  // the loader can clip the full-width iframe to ONLY those regions. The
+  // transparent gaps between them then pass clicks straight through to the host
+  // page's own buttons underneath, instead of the iframe swallowing them. A few
+  // px of padding keeps soft shadows / focus rings from being clipped off.
+  function surfaceRects() {
+    var pad = 8;
+    var out = [];
+    for (var i = 0; i < FLOAT_IDS.length; i++) {
+      var el = byId(FLOAT_IDS[i]);
+      if (!isVisible(el)) continue;
+      var r = el.getBoundingClientRect();
+      out.push({
+        x: Math.floor(r.left - pad),
+        y: Math.floor(r.top - pad),
+        w: Math.ceil(r.width + pad * 2),
+        h: Math.ceil(r.height + pad * 2)
+      });
+    }
+    return out;
+  }
+
+  // Compact signature so we only re-post (and the loader only re-clips) when the
+  // set of surface rects actually changes.
+  function rectsSig(rects) {
+    var s = "";
+    for (var i = 0; i < rects.length; i++) {
+      var r = rects[i];
+      s += r.x + "," + r.y + "," + r.w + "," + r.h + ";";
+    }
+    return s;
+  }
+
   function sync() {
     if (isModal()) {
       if (lastState !== "expanded") {
         lastState = "expanded";
+        lastSig = "";                        // force a re-clip when we re-collapse
         post({ type: "state", state: "expanded" });
       }
       return;
     }
     var h = bandHeight();
     if (!h) return;                          // nothing shown yet (settings still loading)
-    if (lastState !== "collapsed" || h !== lastH) {
+    var rects = surfaceRects();
+    var sig = rectsSig(rects);
+    if (lastState !== "collapsed" || h !== lastH || sig !== lastSig) {
       lastState = "collapsed";
       lastH = h;
-      post({ type: "state", state: "collapsed", h: h });
+      lastSig = sig;
+      // `rects` lets the loader clip the iframe to just the concierge UI so the
+      // empty band area doesn't block the host page's own buttons.
+      post({ type: "state", state: "collapsed", h: h, rects: rects });
     }
   }
 

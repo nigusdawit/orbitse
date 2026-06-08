@@ -153,6 +153,7 @@
     document.body.appendChild(iframe);
 
     var expanded = false;
+    var lastRects = null;   // most recent surface rects from the in-iframe bridge
 
     // Tell the in-iframe bridge the HOST viewport height. The concierge's
     // expanded chat panel is capped at 70vh; inside the iframe vh is just the
@@ -179,14 +180,49 @@
       [200, 800, 2000].forEach(function (t) { setTimeout(sendHostSize, t); });
     });
 
-    function setCollapsed(h) {
+    // Clip the (full-width) iframe down to ONLY the rectangles its concierge UI
+    // actually occupies, so the empty/transparent gaps between those surfaces let
+    // clicks fall through to the host page's own buttons underneath. clip-path
+    // clips hit-testing too, not just painting — so a clipped-away area no longer
+    // intercepts pointer events. With no rects (expanded, or an older in-iframe
+    // bridge that doesn't report them) we clear the clip, leaving the whole band
+    // interactive exactly like before — so the change degrades gracefully.
+    function applyClip(rects, frameH) {
+      var fw = window.innerWidth || 0;
+      if (!rects || !rects.length || !fw || !frameH) {
+        iframe.style.clipPath = "none";
+        iframe.style.webkitClipPath = "none";
+        return;
+      }
+      var d = "";
+      for (var i = 0; i < rects.length; i++) {
+        var r = rects[i];
+        var x1 = Math.max(0, r.x), y1 = Math.max(0, r.y);
+        var x2 = Math.min(fw, r.x + r.w), y2 = Math.min(frameH, r.y + r.h);
+        if (x2 <= x1 || y2 <= y1) continue;     // off-screen / empty — skip
+        d += "M" + x1 + " " + y1 + "H" + x2 + "V" + y2 + "H" + x1 + "Z";
+      }
+      if (!d) {
+        iframe.style.clipPath = "none";
+        iframe.style.webkitClipPath = "none";
+        return;
+      }
+      var val = 'path("' + d + '")';
+      iframe.style.clipPath = val;
+      iframe.style.webkitClipPath = val;
+    }
+
+    function setCollapsed(h, rects) {
       expanded = false;
       iframe.style.top = "auto";
       iframe.style.bottom = "0";
       iframe.style.left = "0";
       iframe.style.transform = "none";
       iframe.style.width = "100%";
-      iframe.style.height = Math.min(h || COLLAPSED_H, window.innerHeight || 800) + "px";
+      var fh = Math.min(h || COLLAPSED_H, window.innerHeight || 800);
+      iframe.style.height = fh + "px";
+      if (rects !== undefined) lastRects = rects;
+      applyClip(lastRects, fh);
     }
 
     function setExpanded() {
@@ -197,6 +233,9 @@
       iframe.style.transform = "none";
       iframe.style.width = "100vw";
       iframe.style.height = "100vh";
+      // Full-screen surface — the whole iframe must be interactive.
+      iframe.style.clipPath = "none";
+      iframe.style.webkitClipPath = "none";
     }
 
     // Listen for the in-iframe bridge's resize messages.
@@ -207,10 +246,11 @@
       if (iframe.contentWindow && ev.source !== iframe.contentWindow) return;
       if (d.type !== "state") return;
       if (d.state === "expanded") setExpanded();
-      else if (d.state === "collapsed") setCollapsed(d.h);
+      else if (d.state === "collapsed") setCollapsed(d.h, d.rects);
     });
 
-    // Keep the collapsed box sized to the viewport on host-window resizes.
+    // Keep the collapsed box sized to the viewport on host-window resizes, and
+    // re-apply the clip against the new viewport width (lastRects is reused).
     window.addEventListener("resize", function () {
       sendHostSize();
       if (!expanded) setCollapsed(parseInt(iframe.style.height, 10) || COLLAPSED_H);
