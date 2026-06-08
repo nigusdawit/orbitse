@@ -5743,14 +5743,67 @@ def _embed_cors(resp):
     return resp
 
 
+# In-process cache of the widget bundle's content hash, re-derived only when a
+# widget file's mtime changes (so we don't hash three files on every request).
+_WIDGET_VER_CACHE = {"key": None, "ver": None}
+
+
+def _widget_asset_version():
+    """Short content hash of the widget bundle (chat-ui.js/css + voice.js).
+
+    Injected into loader.js as a ?v= cache-buster so an updated widget reaches
+    embedded sites (e.g. the WordPress plugin) immediately, without anyone
+    clearing browser or CDN caches. The hash only changes when the widget files'
+    bytes change, so unchanged deploys keep serving from cache.
+    """
+    import hashlib
+    widget_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "embed", "widget")
+    files = ["chat-ui.js", "chat-ui.css", "voice.js"]
+    try:
+        stat_key = tuple(
+            (f, os.path.getmtime(os.path.join(widget_dir, f)))
+            for f in files if os.path.exists(os.path.join(widget_dir, f))
+        )
+    except Exception:
+        stat_key = None
+    if stat_key and _WIDGET_VER_CACHE["key"] == stat_key and _WIDGET_VER_CACHE["ver"]:
+        return _WIDGET_VER_CACHE["ver"]
+    try:
+        h = hashlib.sha1()
+        for f in files:
+            p = os.path.join(widget_dir, f)
+            try:
+                with open(p, "rb") as fh:
+                    h.update(fh.read())
+            except Exception:
+                continue
+        ver = h.hexdigest()[:12]
+    except Exception:
+        import time as _t
+        ver = str(int(_t.time()))
+    _WIDGET_VER_CACHE["key"] = stat_key
+    _WIDGET_VER_CACHE["ver"] = ver
+    return ver
+
+
 @app.route("/embed/loader.js", methods=["GET"])
 def embed_loader_js():
     """Serve the cross-origin Shadow-DOM widget loader. Script tags need no CORS;
-    served with a JS content type + a short cache."""
+    served with a JS content type + a short cache. We read the file and inject a
+    content-hash version (replacing the __AAP_WIDGET_VER__ placeholder) so the
+    loader can cache-bust the widget assets it pulls — updates show up instantly."""
     embed_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "embed")
-    resp = send_from_directory(embed_dir, "loader.js")
-    resp.headers["Content-Type"] = "text/javascript"
-    resp.headers["Cache-Control"] = "public, max-age=300"
+    try:
+        with open(os.path.join(embed_dir, "loader.js"), "r", encoding="utf-8") as fh:
+            body = fh.read()
+    except Exception:
+        abort(404)
+    body = body.replace("__AAP_WIDGET_VER__", _widget_asset_version())
+    resp = Response(body, mimetype="text/javascript")
+    # Revalidate the loader on every load so a new widget version stamp reaches
+    # visitors right away. The loader is tiny; the big widget files it pulls keep
+    # a long cache and are busted by the injected ?v= when their bytes change.
+    resp.headers["Cache-Control"] = "no-cache"
     return resp
 
 

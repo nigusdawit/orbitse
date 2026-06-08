@@ -18,6 +18,14 @@
 (function () {
   "use strict";
 
+  // Cache-buster for the widget assets. The /embed/loader.js route replaces the
+  // placeholder below with a short content hash of chat-ui.js/css + voice.js, so
+  // an updated widget reaches embedded sites (e.g. WordPress) immediately — no
+  // browser/CDN cache clear needed. If the file is ever served raw (placeholder
+  // left intact), the leading "_" guard skips the ?v= so we never request a bad URL.
+  var WIDGET_VER = "__AAP_WIDGET_VER__";
+  var verQS = (WIDGET_VER && WIDGET_VER.charAt(0) !== "_") ? ("?v=" + WIDGET_VER) : "";
+
   // Find our own <script> tag to read its data-* config.
   var self = document.currentScript ||
     (function () {
@@ -112,7 +120,7 @@
     // Inject the widget stylesheet INTO the shadow root (scoped, no host bleed).
     var link = document.createElement("link");
     link.rel = "stylesheet";
-    link.href = apiBase + "/widget/chat-ui.css";
+    link.href = apiBase + "/widget/chat-ui.css" + verQS;
     shadow.appendChild(link);
 
     // Mount point inside the shadow root.
@@ -120,8 +128,8 @@
     shadow.appendChild(mountEl);
 
     // voice.js (optional) then chat-ui.js define window.VoiceAgent / ChatUI.
-    loadScript(apiBase + "/widget/voice.js").catch(function () {})
-      .then(function () { return loadScript(apiBase + "/widget/chat-ui.js"); })
+    loadScript(apiBase + "/widget/voice.js" + verQS).catch(function () {})
+      .then(function () { return loadScript(apiBase + "/widget/chat-ui.js" + verQS); })
       .then(function () {
         if (window.ChatUI && typeof window.ChatUI.init === "function") {
           window.ChatUI.init({ apiBase: apiBase, embedKey: embedKey, mount: mountEl });
