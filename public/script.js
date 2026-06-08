@@ -6469,7 +6469,18 @@ async function chatSendStreaming(message, wasCollapsed) {
                    progress immediately. The HTML extraction below simply no-ops
                    until the "html" field actually begins arriving. */
                 pageStreamStarted = true;
-                openImmersivePageStreaming();
+                /* Lead with a short overview so the visitor sees WHAT is being
+                   built before the (slower) page finishes rendering. The reply
+                   text has already streamed into displayTokens by the time the
+                   command block begins, so we reuse it as the build overview. */
+                const _ovRaw = (displayTokens || '')
+                  .replace(/`{1,3}\s*command[\s\S]*$/i, '')
+                  .replace(/`{1,3}\s*$/, '')
+                  .trim();
+                const _buildOverview = _ovRaw
+                  ? _ovRaw.replace(/^#{1,4}\s+/gm, '').replace(/\*\*(.+?)\*\*/g, '$1').trim()
+                  : "I'm putting together a page with the details you asked for…";
+                openImmersivePageStreaming(_buildOverview);
                 openSidePanel();
               }
               if (pageStreamStarted) {
@@ -9345,6 +9356,8 @@ function buildImmersivePageDoc(bodyHtml, streamToken) {
           } else if (d.type === 'finish') {
             var pulse = document.querySelector('.__streaming_pulse__');
             if (pulse) pulse.remove();
+            var ov = document.querySelector('.__streaming_overview__');
+            if (ov) ov.remove();
             /* insertAdjacentHTML parses <script> tags into the DOM but
                does NOT execute them. Re-run any inline/external scripts
                the AI included (e.g. IntersectionObserver setups that toggle
@@ -9441,6 +9454,22 @@ function buildImmersivePageDoc(bodyHtml, streamToken) {
       0%, 100% { transform: scale(1); opacity: 1; }
       50% { transform: scale(1.4); opacity: 0.7; }
     }
+    /* Short "what's being built" overview — shown centered near the top while
+       the page streams in so the visitor reads what's coming before it
+       renders. Removed (with the pulse) on finish. */
+    .__streaming_overview__ {
+      position: fixed; top: 1.25rem; left: 50%;
+      transform: translateX(-50%); z-index: 999999;
+      max-width: min(90vw, 540px); text-align: center;
+      padding: 0.85rem 1.4rem;
+      background: rgba(0,0,0,0.6);
+      backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+      border: 1px solid rgba(255,255,255,0.12); border-radius: 14px;
+      font-family: var(--font-sans); font-size: 0.92rem; line-height: 1.5;
+      color: rgba(255,255,255,0.92);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+      animation: __streamFade__ 1.6s ease-in-out infinite;
+    }
   </style>
   ${streamBootstrap}
 </head>
@@ -9490,17 +9519,24 @@ function openImmersivePage(html) {
 
 let _immersiveStream = null;
 
-function openImmersivePageStreaming() {
+function openImmersivePageStreaming(overviewText) {
   const overlay = document.getElementById('immersive-page-overlay');
   const frame = document.getElementById('immersive-page-frame');
   if (!overlay || !frame) return null;
 
   closeFullscreenCanvas();
 
-  /* Body has an empty mount node the bootstrap script appends into,
-     plus a small "Building" indicator that the finish step removes. */
+  /* Body has an empty mount node the bootstrap script appends into, a small
+     "Building" indicator, and (when provided) a short overview of what's
+     being built so the visitor reads what's coming before it renders. Both
+     the pulse and the overview are removed by the finish step. */
+  const _ov = (overviewText || '').trim();
+  const _ovHtml = _ov
+    ? '<div class="__streaming_overview__">' + escapeHtml(_ov) + '</div>'
+    : '';
   const initialBody =
-    '<div class="__streaming_pulse__">Building</div>' +
+    '<div class="__streaming_pulse__">Building your page…</div>' +
+    _ovHtml +
     '<div id="__stream_root__"></div>';
 
   /* The iframe runs sandbox="allow-scripts" without allow-same-origin,

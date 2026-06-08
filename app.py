@@ -23384,6 +23384,33 @@ def api_chat():
         "deck can resume."
     )
 
+    # ----- 6b. EXISTING GALLERY CARDS vs. NEW PAGES + PAGE-BUILD OVERVIEW -----
+    # Two tenant-invariant rules that keep the visitor experience snappy:
+    #   1. When the visitor wants to SEE something that already exists as a
+    #      gallery card, OPEN that real card with `navigate` — never rebuild it
+    #      from scratch with the (slow, redundant) generatePage command.
+    #   2. Whenever a page IS generated, lead with a one-line overview so the
+    #      visitor sees what's coming before the slower page render finishes.
+    active_prompt += (
+        "\n\nSHOWING EXISTING GALLERY CARDS:\n"
+        "  - The SITE INDEX lists every gallery card by name and slug. When "
+        "the visitor asks to see / show / pull up / look at a SPECIFIC item "
+        "that already exists as one of those gallery cards, OPEN the real "
+        "card with the navigate command — do NOT build a new page for it:\n"
+        "    ```command\\n{\"action\": \"navigate\", \"target\": \"<card-slug>\"}\\n```\n"
+        "  - navigate is instant and shows the ACTUAL website gallery card. "
+        "generatePage is ONLY for NEW custom content the site does not "
+        "already have (comparisons, custom layouts, summaries). NEVER use "
+        "generatePage to re-create something that is already a gallery card.\n"
+        "\n"
+        "PAGE-BUILD OVERVIEW (whenever you DO use generatePage):\n"
+        "  - ALWAYS put a short, friendly overview in the reply field FIRST — "
+        "1-2 sentences naming what the page will contain — so the visitor "
+        "sees what is being built before the page finishes rendering. Then "
+        "include the generatePage command. NEVER send generatePage with an "
+        "empty reply."
+    )
+
     # ----- 7. PRESENTATION-MODE BEHAVIOR (only when a deck is playing) -----
     # When the visitor is mid-presentation and asks a side question, the
     # whole point is to NOT disrupt the deck. Be brief, answer in chat,
