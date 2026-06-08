@@ -7847,6 +7847,7 @@ html.aap-widget #chatbot-panel,
 html.aap-widget #side-chat-panel,
 html.aap-widget .voice-intro-card,
 html.aap-widget .page-archive-bubble,
+html.aap-widget .page-archive-bubble-btn,
 html.aap-widget .page-archive-popover {
   transition: none !important;
 }

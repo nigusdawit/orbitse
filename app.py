@@ -8138,7 +8138,7 @@ def _render_app_shell_response(page=None, section_ids=None, initial_section_dom_
         # href="/styles.css"> snapshot — also get the fresh marker. Bump
         # _STYLES_CSS_VERSION whenever public/styles.css ships a visible
         # change that needs to invalidate cached copies.
-        _STYLES_CSS_VERSION = "20260608e"
+        _STYLES_CSS_VERSION = "20260608f"
         html_content = re.sub(
             r'href="/styles\.css(?:\?[^"]*)?"',
             f'href="/styles.css?v={_STYLES_CSS_VERSION}"',

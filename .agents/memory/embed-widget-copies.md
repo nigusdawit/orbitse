@@ -50,6 +50,21 @@ faint/unreadable unless given an opaque dark backdrop derived from the theme
 base color. **Gotcha:** the proactive welcome card is `#chatbot-panel` (not
 `#side-chat-panel`) — the dark rule must cover all three surfaces.
 
+## Clip-path tightly clips the iframe → kills shadows, chases animations
+`loader.js` applies a `clip-path` that hugs each visible surface's rect (the
+bridge reports `surfaceRects`) so the transparent gaps pass clicks to the host.
+Two visual gotchas fall out of that, both fixed in the `html.aap-widget` CSS
+block:
+- a surface's `box-shadow` gets **hard-cut** by the clip into an ugly grey
+  rectangle ("shade"). Kill `box-shadow` on every widget floating surface
+  (`#chatbot-panel`, `#side-chat-panel`, `.voice-intro-card`,
+  `.page-archive-bubble`/`-btn`, `.page-archive-popover`) — not just the pill.
+- if a surface slides/fades open over several frames, the clip **chases** it
+  frame-by-frame → flicker. Set `transition:none` on those same surfaces
+  (keyframe `animation` like the typing dots is left intact) and remove the
+  iframe's own `height` transition in `loader.js` so the box + clip change in one
+  step. **Why:** the clip update is instant; anything animated lags it.
+
 ## Cache-busting
 `public/styles.css` is referenced with `?v=_STYLES_CSS_VERSION` (regex-injected
 in `app.py`) — bump it on visible CSS changes. `/embed/concierge`,

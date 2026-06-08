@@ -6357,12 +6357,13 @@ async function chatSendStreaming(message, wasCollapsed) {
     let streamBubble = null;
     let bubbleFinalized = false;
     let expandedForResponse = false;
-    /* Live page-render state — set when we detect a generatePage/generateHTML
-       command early in the stream so the iframe renders HTML progressively
-       as tokens arrive. `pageStreamWritten` tracks how many decoded HTML
-       chars have already been appended so we only flush the new delta. */
-    let pageStreamStarted = false;
-    let pageStreamWritten = 0;
+    /* Page-build tracking. We deliberately no longer live-render the page as it
+       streams in. Instead the visitor reads a short overview that streams into a
+       normal chat bubble first, and the finished page is rendered ONCE — when
+       the complete command arrives (see the generatePage handler). We only flag
+       that a page build is underway so the cut-off / empty-reply safety nets
+       below behave correctly. */
+    let pageBuildDetected = false;
     /* Availability snapshots streamed back from lookup_service_availability
        — captured as they arrive but rendered as tap-to-pick chip cards
        AFTER the assistant's final reply bubble is finalized, so the chips
@@ -6459,55 +6460,17 @@ async function chatSendStreaming(message, wasCollapsed) {
                 }
               }
             } else {
-              /* Inside the command block — try to live-render a generatePage
-                 or generateHTML command's HTML field as it streams in. */
-              if (!pageStreamStarted &&
+              /* Inside the command block. We deliberately do NOT live-render the
+                 page while it streams — the visitor reads the overview text that
+                 already finalized into a chat bubble above, and the finished page
+                 is rendered ONCE (authoritatively) when the complete command
+                 arrives (see the generatePage handler). We only flag that a page
+                 build is underway so the cut-off / empty-reply safety nets below
+                 behave correctly. No overlay is opened here, so nothing pops up
+                 before the real page is ready. */
+              if (!pageBuildDetected &&
                   /\{"action"\s*:\s*"(generatePage|generateHTML)"/i.test(tokenText)) {
-                /* Open the "Building…" overlay the INSTANT we know this is a
-                   page command — don't wait for the (often long) text preamble
-                   or the "html" field to start streaming. The visitor sees
-                   progress immediately. The HTML extraction below simply no-ops
-                   until the "html" field actually begins arriving. */
-                pageStreamStarted = true;
-                /* Lead with a short overview so the visitor sees WHAT is being
-                   built before the (slower) page finishes rendering. The reply
-                   text has already streamed into displayTokens by the time the
-                   command block begins, so we reuse it as the build overview. */
-                const _ovRaw = (displayTokens || '')
-                  .replace(/`{1,3}\s*command[\s\S]*$/i, '')
-                  .replace(/`{1,3}\s*$/, '')
-                  .trim();
-                const _buildOverview = _ovRaw
-                  ? _ovRaw.replace(/^#{1,4}\s+/gm, '').replace(/\*\*(.+?)\*\*/g, '$1').trim()
-                  : "I'm putting together a page with the details you asked for…";
-                openImmersivePageStreaming(_buildOverview);
-                openSidePanel();
-              }
-              if (pageStreamStarted) {
-                const extracted = extractStreamingJsonString(tokenText, 'html');
-                if (extracted && extracted.value) {
-                  /* Only flush up to the latest TOP-LEVEL element boundary —
-                     a position where every opened element has been closed.
-                     Each insertAdjacentHTML call parses fresh in the document
-                     context (it can't continue inside an open <style> from a
-                     previous chunk), so flushing mid-element would dump the
-                     remaining CSS/markup as visible text on the next chunk. */
-                  const safeEnd = extracted.complete
-                    ? extracted.value.length
-                    : findTopLevelHtmlBoundary(extracted.value, pageStreamWritten);
-                  if (safeEnd > pageStreamWritten) {
-                    const delta = extracted.value.substring(pageStreamWritten, safeEnd);
-                    appendImmersivePageStreaming(delta);
-                    pageStreamWritten = safeEnd;
-                  }
-                  /* The whole html field has now streamed in and been flushed
-                     to the iframe. Mark the live render complete so the command
-                     handler knows it can trust the streamed page and skip the
-                     one-shot fallback. */
-                  if (extracted.complete && _immersiveStream) {
-                    _immersiveStream.completed = true;
-                  }
-                }
+                pageBuildDetected = true;
               }
             }
           } else if (event.type === 'text') {
@@ -6532,13 +6495,9 @@ async function chatSendStreaming(message, wasCollapsed) {
             chatShowTyping(false);
             chatSetStatus(null);
             if (streamBubble) streamBubble.remove();
-            /* Tear down the live page render if the AI errored mid-stream
-               so a half-built page doesn't stick around. */
-            if (pageStreamStarted) {
-              closeImmersivePage();
-              resetImmersiveStreamState();
-              pageStreamStarted = false;
-            }
+            /* No live page overlay is shown during streaming anymore, so there's
+               nothing to tear down on error — just clear the build flag. */
+            pageBuildDetected = false;
             /* Cancel any sentence-streaming TTS that was already speaking
                half-formed sentences — the error message will be spoken via
                the standard chatAddMessage hook instead. */
@@ -6605,30 +6564,25 @@ async function chatSendStreaming(message, wasCollapsed) {
       }
     }
 
-    /* Safety net for an interrupted page build: we started rendering an
-       immersive page live during streaming, but never ended up with a
-       complete generatePage/generateHTML command (e.g. the model's output
-       was cut off at the token limit, leaving the command JSON unclosed and
-       unparseable). Without this, the "Building" indicator would spin
-       forever. Finalize the partial page so the indicator clears and let the
-       visitor know it was cut short so they can ask again. */
+    /* Safety net for an interrupted page build: a page command began streaming
+       but never ended up as a complete generatePage/generateHTML command (e.g.
+       the model's output was cut off at the token limit, leaving the command
+       JSON unclosed and unparseable). There's no live overlay to clear anymore,
+       so just let the visitor know it was cut short so they can ask again. */
     const _completedPageCmd = pendingCommand &&
       (pendingCommand.action === 'generatePage' || pendingCommand.action === 'generateHTML');
-    if (pageStreamStarted && !_completedPageCmd) {
-      if (isImmersivePageStreaming()) {
-        finalizeImmersivePageStreaming();
-      }
-      pageStreamStarted = false;
+    if (pageBuildDetected && !_completedPageCmd) {
+      pageBuildDetected = false;
       chatAddMessage('agent', "That page got cut off before it finished building. Could you ask me to try again?");
     }
 
     /* Empty-reply safety net: the stream finished but produced no visible
-       text, no command, no availability chips, and no live page build. Without
+       text, no command, no availability chips, and no page build. Without
        this the visitor is left staring at a cleared spinner with no answer
        (e.g. the model spent its whole tool budget without ever synthesizing a
        reply). Surface a friendly retry prompt so a turn never ends in silence.
        Mirrors the early-return pattern used by the 'error' event above. */
-    if (!displayText && !pendingCommand && !pageStreamStarted &&
+    if (!displayText && !pendingCommand && !pageBuildDetected &&
         availabilityResults.length === 0) {
       if (streamBubble) { streamBubble.remove(); streamBubble = null; }
       chatAddMessage('agent', "Sorry — I couldn't put that together just now. Could you try asking again?");
@@ -7850,28 +7804,23 @@ function executeCommand(cmd) {
     */
     case 'generatePage':
     case 'generateHTML': {
-      /* The live "assembly" stream (the pulsing "Building" overlay shown while
-         the HTML arrives) is only a PROGRESS affordance — we never rely on it
-         for the final result. Here's why: the AI's standard page template hides
-         every section with `opacity:0` and reveals them with a single
-         DOMContentLoaded-gated IntersectionObserver script. When the page is
-         streamed in chunk-by-chunk via insertAdjacentHTML, those <script>s do
-         NOT execute on insert, and re-running them on "finish" happens AFTER the
-         iframe's DOMContentLoaded has already fired — so the reveal listener
-         never runs and all the sections stay invisible. The visitor is then
-         left staring at a blank / "stuck on Building" page even though the HTML
-         is fully present and saved.
+      /* The page is rendered ONCE here, when the complete command has arrived —
+         we no longer stream a live "Building…" overlay as the HTML arrives (the
+         visitor reads a short overview in a chat bubble while it builds, then
+         sees the finished page). A one-shot render is also REQUIRED for the page
+         to actually work: the AI's standard page template hides every section
+         with `opacity:0` and reveals them via a single DOMContentLoaded-gated
+         IntersectionObserver script. Writing the COMPLETE document into the
+         iframe via srcdoc (openImmersivePage) makes the browser parse it fresh
+         and run every <script> in normal load order (DOMContentLoaded fires
+         correctly), so all content reveals reliably. A chunk-by-chunk
+         insertAdjacentHTML render would never fire those reveal listeners,
+         leaving sections invisible even though the HTML is present.
 
-         So once the complete command has arrived we ALWAYS tear down the live
-         stream and do an authoritative one-shot render of the full HTML:
-         openImmersivePage() writes the COMPLETE document into the iframe via
-         srcdoc, which makes the browser parse it fresh and run every <script>
-         in normal load order (DOMContentLoaded fires correctly), so all
-         content reveals reliably. The only cost is the CSS intro animations
-         replay once — a fair trade for a page that actually shows up. */
+         The isImmersivePageStreaming() guard below is a defensive carry-over:
+         the normal path never opens a live stream anymore, but if any older
+         stream state lingers we drop it before replacing the whole document. */
       if (isImmersivePageStreaming()) {
-        /* Drop the live-stream listener + state; we're replacing the whole
-           iframe document below, so there's no need to flush 'finish'. */
         resetImmersiveStreamState();
       }
       if ((cmd.html || '').trim()) {
