@@ -314,6 +314,80 @@ def admin_delete_submission(sub_id):
     return jsonify({"success": True})
 
 
+@forms_bp.route("/admin/api/submissions", methods=["GET"])
+@admin_required
+def admin_submissions_inbox():
+    """Cross-form submissions INBOX (task 100, gap §2.6): the most recent submissions
+    across ALL forms with the form name + status + a short field preview, so the operator
+    has one unified queue instead of picking a form first. ?limit (default 50, max 200)."""
+    try:
+        limit = max(1, min(int(request.args.get("limit", 50) or 50), 200))
+    except (TypeError, ValueError):
+        limit = 50
+    rows = query_db(
+        "SELECT s.id, s.form_id, s.status, s.submitted_at, s.submission_data, "
+        "       COALESCE(f.name,'(form)') AS form_name "
+        "FROM form_submissions s LEFT JOIN custom_forms f ON f.id = s.form_id "
+        "ORDER BY s.submitted_at DESC LIMIT %s", (limit,)) or []
+    out = []
+    for r in rows:
+        d = r.get("submission_data") or {}
+        if isinstance(d, str):
+            try:
+                import json as _json
+                d = _json.loads(d)
+            except Exception:
+                d = {}
+        preview = " · ".join("%s: %s" % (k, str(v)[:40])
+                             for k, v in (list(d.items())[:3] if isinstance(d, dict) else []))
+        out.append({"id": r["id"], "form_id": r.get("form_id"),
+                    "form_name": r.get("form_name") or "", "status": r.get("status") or "new",
+                    "submitted_at": r["submitted_at"].isoformat() if r.get("submitted_at") else None,
+                    "preview": preview})
+    return jsonify({"submissions": out})
+
+
+@forms_bp.route("/admin/api/submissions/<int:sub_id>/to-lead", methods=["POST"])
+@admin_required
+def admin_submission_to_lead(sub_id):
+    """Route a form submission into the CRM as a lead (task 100, gap §2.6). Heuristically
+    pulls name/email/phone from the submission_data JSONB, creates a 'form'-sourced lead
+    (tenant_id defaults to 1 — silo), and marks the submission 'converted'."""
+    sub = query_db("SELECT id, submission_data FROM form_submissions WHERE id=%s",
+                   (sub_id,), fetchone=True)
+    if not sub:
+        return jsonify({"error": "Submission not found"}), 404
+    data = sub.get("submission_data") or {}
+    if isinstance(data, str):
+        try:
+            import json as _json
+            data = _json.loads(data)
+        except Exception:
+            data = {}
+    name = email = phone = ""
+    if isinstance(data, dict):
+        for k, v in data.items():
+            kl = str(k).lower()
+            sv = "" if v is None else str(v)
+            if not email and ("email" in kl or "@" in sv):
+                email = sv[:320]
+            elif not name and "name" in kl:
+                name = sv[:200]
+            elif not phone and ("phone" in kl or "tel" in kl or "mobile" in kl):
+                phone = sv[:50]
+    if not (name or email or phone):
+        return jsonify({"error": "No name/email/phone found in this submission."}), 400
+    row = execute_db(
+        "INSERT INTO leads (name, email, phone, interest, source, status) "
+        "VALUES (%s,%s,%s,'Form submission','form','new') RETURNING id",
+        (name, email.lower(), phone))
+    try:
+        execute_db("UPDATE form_submissions SET status='converted' WHERE id=%s", (sub_id,))
+    except Exception:
+        pass
+    return jsonify({"ok": True, "lead_id": row["id"] if isinstance(row, dict) else None})
+
+
 @forms_bp.route("/admin/api/forms/<int:form_id>/analytics", methods=["GET"])
 @admin_required
 def admin_form_analytics(form_id):

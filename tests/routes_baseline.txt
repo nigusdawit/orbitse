@@ -226,6 +226,7 @@ GET /admin/api/sphere-settings
 GET /admin/api/stripe/recent-checkouts
 GET /admin/api/stripe/settings
 GET /admin/api/stripe/sync-status
+GET /admin/api/submissions
 GET /admin/api/subscriber-lists
 GET /admin/api/super-admin/audit
 GET /admin/api/super-admin/status
@@ -467,6 +468,7 @@ POST /admin/api/stripe/backfill
 POST /admin/api/stripe/mode
 POST /admin/api/stripe/probe
 POST /admin/api/stripe/sync-product
+POST /admin/api/submissions/<int:sub_id>/to-lead
 POST /admin/api/super-admin/lock
 POST /admin/api/super-admin/unlock
 POST /admin/api/team

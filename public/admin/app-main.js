@@ -2931,7 +2931,49 @@
       checkbox: 'Check', radio: 'Radio', hidden: 'Hide'
     };
 
+    // task 100 (gap §2.6): cross-form submissions inbox + one-click convert-to-lead.
+    // Only the numeric submission id is inlined in the onclick (no untrusted data);
+    // previews/form names are esc'd (text context). Fail-open.
+    async function loadSubmissionsInbox() {
+      const el = document.getElementById('submissions-inbox');
+      if (!el) return;
+      try {
+        const d = await (await fetch('/admin/api/submissions?limit=50', { credentials: 'same-origin' })).json();
+        const subs = (d && d.submissions) || [];
+        if (!subs.length) { el.innerHTML = ''; return; }
+        let html = '<div class="form-panel" style="margin-bottom:1rem;">'
+          + '<h3 style="margin:0 0 .5rem;">Submissions inbox <span style="font-weight:400;font-size:.8rem;color:var(--admin-text-muted);">(all forms)</span></h3>'
+          + '<table style="width:100%;border-collapse:collapse;font-size:13px;"><thead><tr style="text-align:left;opacity:.7;">'
+          + '<th style="padding:6px;">Form</th><th style="padding:6px;">Preview</th><th style="padding:6px;">Status</th>'
+          + '<th style="padding:6px;">When</th><th style="padding:6px;">Actions</th></tr></thead><tbody>';
+        subs.forEach(s => {
+          const when = s.submitted_at ? new Date(s.submitted_at).toLocaleString() : '';
+          const conv = (s.status === 'converted')
+            ? '<span style="opacity:.6;font-size:12px;">✓ Lead</span>'
+            : '<button class="btn-secondary" style="padding:3px 8px;font-size:12px;" onclick="convertSubmissionToLead(' + s.id + ')" data-testid="sub-to-lead">→ Lead</button>';
+          html += '<tr style="border-top:1px solid rgba(255,255,255,.06);">'
+            + '<td style="padding:6px;">' + esc(s.form_name || '') + '</td>'
+            + '<td style="padding:6px;">' + esc(s.preview || '') + '</td>'
+            + '<td style="padding:6px;"><span class="badge">' + esc(s.status || '') + '</span></td>'
+            + '<td style="padding:6px;">' + esc(when) + '</td>'
+            + '<td style="padding:6px;">' + conv + '</td></tr>';
+        });
+        el.innerHTML = html + '</tbody></table></div>';
+      } catch (_) { el.innerHTML = ''; }
+    }
+
+    async function convertSubmissionToLead(subId) {
+      try {
+        const res = await adminFetch('/admin/api/submissions/' + subId + '/to-lead',
+          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        if (!res.ok) { showToast('Could not convert this submission', 'error'); return; }
+        showToast('Converted to lead', 'success');
+        loadSubmissionsInbox();
+      } catch (e) { showToast('Convert failed', 'error'); }
+    }
+
     async function loadForms() {
+      loadSubmissionsInbox();   // task 100 §2.6 inbox
       try {
         const res = await fetch('/admin/api/forms');
         const forms = await res.json();
