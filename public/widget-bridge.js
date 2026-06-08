@@ -55,6 +55,15 @@
   var FLOAT_IDS = ["chatbot-container", "chatbot-panel", "voice-intro-card",
                    "side-chat-panel", "page-archive-bubble", "page-archive-popover"];
 
+  // Padding added around each measured surface. SIDE_PAD keeps soft shadows /
+  // focus rings from being clipped. TOP_PAD is extra headroom ABOVE each surface
+  // for things that render outside the surface's own box and above it: the icon
+  // buttons' hover tooltips ("Visualize", etc., absolutely-positioned ::after
+  // ~32px above the bar) and the AI "thinking" three-dots. Without this top
+  // headroom the band/clip cut them off at the iframe's top edge.
+  var SIDE_PAD = 8;
+  var TOP_PAD = 44;
+
   function post(data) {
     data.__aap = MSG;
     try { parent.postMessage(data, "*"); } catch (e) {}
@@ -106,7 +115,9 @@
       if (need > band) band = need;
     }
     if (band <= 0) return 0;
-    band = Math.ceil(band) + 8;                  // a little breathing room
+    // Add TOP_PAD headroom so the band grows tall enough to show the hover
+    // tooltips / thinking dots that render just ABOVE the topmost surface.
+    band = Math.ceil(band) + TOP_PAD;
     // Cap at the HOST viewport height — NOT window.innerHeight, because inside
     // this iframe that IS the band we're computing, so capping at it would pin
     // the band to its current size and a taller surface (the expanded chat
@@ -125,17 +136,19 @@
   // page's own buttons underneath, instead of the iframe swallowing them. A few
   // px of padding keeps soft shadows / focus rings from being clipped off.
   function surfaceRects() {
-    var pad = 8;
     var out = [];
     for (var i = 0; i < FLOAT_IDS.length; i++) {
       var el = byId(FLOAT_IDS[i]);
       if (!isVisible(el)) continue;
       var r = el.getBoundingClientRect();
+      // Extra TOP_PAD headroom above the surface so hover tooltips and the
+      // thinking dots (which render above the bar) stay inside the clip region;
+      // SIDE_PAD on the other edges for shadows / focus rings.
       out.push({
-        x: Math.floor(r.left - pad),
-        y: Math.floor(r.top - pad),
-        w: Math.ceil(r.width + pad * 2),
-        h: Math.ceil(r.height + pad * 2)
+        x: Math.floor(r.left - SIDE_PAD),
+        y: Math.floor(r.top - TOP_PAD),
+        w: Math.ceil(r.width + SIDE_PAD * 2),
+        h: Math.ceil(r.height + TOP_PAD + SIDE_PAD)
       });
     }
     return out;

@@ -61,9 +61,29 @@ block:
   `.page-archive-bubble`/`-btn`, `.page-archive-popover`) — not just the pill.
 - if a surface slides/fades open over several frames, the clip **chases** it
   frame-by-frame → flicker. Set `transition:none` on those same surfaces
-  (keyframe `animation` like the typing dots is left intact) and remove the
-  iframe's own `height` transition in `loader.js` so the box + clip change in one
-  step. **Why:** the clip update is instant; anything animated lags it.
+  (keyframe `animation` like the typing dots is left intact).
+
+## Animating the iframe HEIGHT (smooth expand) without clip flicker
+The iframe is **bottom-anchored** and its `clip-path` coords are **top-left
+relative**, so while the height animates the box's top edge moves and a clip
+computed for the FINAL height cuts/reveals content mid-animation (flicker).
+**Fix:** give `loader.js` a `transition:height` for a smooth expand, but CLEAR
+the clip the moment a height change starts and re-apply it on the iframe's own
+`transitionend` (propertyName `height`) — with a ~300ms timeout fallback so it
+can never get stuck cleared (throttled/background tabs). Cancel that pending
+reapply in `setExpanded()` and whenever a same-height (rects-only) update lands.
+**Trade-off:** while the clip is cleared the full-width band briefly intercepts
+host clicks — acceptable because it's only during the user's own expand gesture
+and ends as soon as the animation does. Tiny (<2px) height jitters skip the
+animation path and re-clip instantly.
+
+## Band/clip need TOP headroom for above-bar UI
+Hover tooltips (`.chatbot-icon-btn::after`, "Visualize" etc.) and the AI
+"thinking" three-dots render **above** the bar, outside each surface's own box.
+A uniform small pad clips them at the iframe's top edge. **Fix:** the bridge uses
+asymmetric padding — `SIDE_PAD` (~8px) on left/right/bottom but a larger
+`TOP_PAD` (~44px) added to BOTH `bandHeight()` (so the band grows taller) and
+each rect's top in `surfaceRects()` (so the clip extends above the surface).
 
 ## Cache-busting
 `public/styles.css` is referenced with `?v=_STYLES_CSS_VERSION` (regex-injected

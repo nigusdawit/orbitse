@@ -148,10 +148,11 @@
       "background:transparent",
       "color-scheme:normal",
       "z-index:2147482000",
-      // No height transition: the iframe is clip-path'd to its surfaces, and an
-      // animated height would lag the (instant) clip — revealing/cutting content
-      // edges mid-animation, which reads as flicker. Resize instantly instead.
-      "transition:none"
+      // Smooth height animation so opening the panel / going fullscreen glides
+      // instead of snapping. The clip-path is CLEARED while the height animates
+      // (see setCollapsed/setExpanded) and re-applied once it settles, so the
+      // moving box never fights stale clip coords — that was the old flicker.
+      "transition:height 0.22s cubic-bezier(0.22, 1, 0.36, 1)"
     ].join(";");
     document.body.appendChild(iframe);
 
@@ -215,6 +216,37 @@
       iframe.style.webkitClipPath = val;
     }
 
+    // The clip-path is cleared while the iframe height animates (see below) and
+    // re-applied the moment the animation ends. We listen for the iframe's own
+    // `transitionend` (height) so the transparent gaps go back to passing host
+    // clicks through as soon as possible — with a short timeout as a fallback
+    // for browsers/background tabs that throttle or never fire the event, so the
+    // clip can never get stuck cleared.
+    var clipTimer = null;
+    var clipEndHandler = null;
+
+    function cancelClipReapply() {
+      if (clipTimer) { clearTimeout(clipTimer); clipTimer = null; }
+      if (clipEndHandler) {
+        iframe.removeEventListener("transitionend", clipEndHandler);
+        clipEndHandler = null;
+      }
+    }
+
+    function scheduleClipReapply(fh) {
+      cancelClipReapply();
+      function finish() {
+        cancelClipReapply();
+        // Only re-clip if we're still collapsed (a modal expand clears it).
+        if (!expanded) applyClip(lastRects, parseInt(iframe.style.height, 10) || fh);
+      }
+      clipEndHandler = function (e) {
+        if (e.target === iframe && e.propertyName === "height") finish();
+      };
+      iframe.addEventListener("transitionend", clipEndHandler);
+      clipTimer = setTimeout(finish, 300);   // fallback cap (> the 0.22s transition)
+    }
+
     function setCollapsed(h, rects) {
       expanded = false;
       iframe.style.top = "auto";
@@ -223,13 +255,29 @@
       iframe.style.transform = "none";
       iframe.style.width = "100%";
       var fh = Math.min(h || COLLAPSED_H, window.innerHeight || 800);
-      iframe.style.height = fh + "px";
+      var prevH = parseInt(iframe.style.height, 10) || 0;
       if (rects !== undefined) lastRects = rects;
-      applyClip(lastRects, fh);
+      iframe.style.height = fh + "px";
+      if (Math.abs(fh - prevH) > 2) {
+        // The height is animating (panel opening/closing, popover, etc.). A
+        // clip-path is anchored to the iframe's top-left, which moves while the
+        // bottom-anchored box grows — so a clip computed for the FINAL height
+        // would cut/reveal content edges mid-animation (flicker). Clear it for
+        // the duration, then re-apply the real clip the instant the animation
+        // ends (transitionend) so host click-through is restored ASAP.
+        iframe.style.clipPath = "none";
+        iframe.style.webkitClipPath = "none";
+        scheduleClipReapply(fh);
+      } else {
+        // Same height, only the rect set changed — clip can update instantly.
+        cancelClipReapply();
+        applyClip(lastRects, fh);
+      }
     }
 
     function setExpanded() {
       expanded = true;
+      cancelClipReapply();   // drop any pending collapsed-clip reapply
       iframe.style.top = "0";
       iframe.style.bottom = "0";
       iframe.style.left = "0";
