@@ -79,6 +79,14 @@
       if (s && s.classList.contains("active")) return true;            // split view
       var im = byId("immersive-page-overlay");
       if (im && im.classList.contains("active")) return true;          // generated page / canvas
+      // The fullscreen gallery + 3D sphere views are page-covering surfaces too.
+      // The AI's `navigate` command opens a gallery card via showGallery()
+      // (adds .active to #gallery-view); without this the embed stays a small
+      // clipped band and the fullscreen gallery card never appears.
+      var gv = byId("gallery-view");
+      if (gv && gv.classList.contains("active")) return true;          // fullscreen gallery
+      var sph = byId("sphere-view");
+      if (sph && sph.classList.contains("active")) return true;        // 3D sphere view
     } catch (e) {}
     return false;
   }

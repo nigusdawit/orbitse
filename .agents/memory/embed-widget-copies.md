@@ -37,10 +37,22 @@ sizes `#chatbot-panel` off `--aap-host-vh`. The loader also caps the iframe at
 the host height as a backstop. Bridge trusts only `ev.source === window.parent`.
 
 ## Modal vs. band
-Only truly page-covering surfaces (`#split-overlay`, `#immersive-page-overlay`)
-go fullscreen (bridge `isModal()`). The expanded chat panel is just a
-bottom-anchored card — it's a `FLOAT_IDS` member measured into the band so the
-host stays clickable, exactly like the main site.
+Page-covering surfaces go fullscreen via bridge `isModal()`: `#split-overlay`,
+`#immersive-page-overlay`, **and** `#gallery-view`/`#sphere-view` (both `.active`).
+The expanded chat panel is just a bottom-anchored card — it's a `FLOAT_IDS`
+member measured into the band so the host stays clickable, like the main site.
+
+**Two-part rule for any fullscreen view in the embed (learned via the gallery
+card not showing):** a page-covering view needs BOTH (1) an `isModal()` entry in
+`widget-bridge.js` so the iframe expands to fullscreen, AND (2) a widget-mode CSS
+override `html.aap-widget #<id>.active { display:block !important; }` — because
+the widget block hard-hides `#gallery-view`/`#sphere-view`/`#landing-view` with
+`display:none !important`, so toggling only `.active` (showGallery/showSphereView)
+leaves it invisible. Miss either half and the view silently never renders.
+**Why it surfaced:** a prompt-only fix steered the AI's `navigate` command to open
+the real gallery card (`showGallery()` → `#gallery-view.active`) instead of
+generating a page (`#immersive-page-overlay`, which already was modal) — exposing
+that the gallery path had neither half wired for the embed.
 
 ## Widget-mode surfaces need an explicit dark backdrop
 In widget mode the page is transparent (floats over the host). The frosted-glass

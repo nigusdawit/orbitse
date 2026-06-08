@@ -7775,6 +7775,16 @@ html.aap-widget #site-footer {
   display: none !important;
 }
 
+/* …BUT when the AI's `navigate` command opens a gallery card (or the 3D sphere)
+   these page-covering views become `.active`. The bridge then reports the iframe
+   as fullscreen (isModal), so we must let the active view actually render —
+   otherwise it stays hidden by the rule above and the fullscreen gallery card
+   never appears in the embed. */
+html.aap-widget #gallery-view.active,
+html.aap-widget #sphere-view.active {
+  display: block !important;
+}
+
 /* The concierge keeps its NATURAL layout in widget mode — the bar stays centered
    (max-width 540px) and the voice intro / side panel stay bottom-right, exactly
    like the main site. The loader sizes the iframe to a full-width bottom band
