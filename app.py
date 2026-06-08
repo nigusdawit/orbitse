@@ -5700,6 +5700,75 @@ def _embed_apply_cors(resp, key):
         resp.headers["Access-Control-Max-Age"] = "600"
 
 
+def _embed_own_origin():
+    """The platform's own scheme://host (the origin the embedded concierge is
+    served from). The iframe's API calls are SAME-ORIGIN, so they carry THIS
+    origin — not the host site's — which is why the per-key origin allowlist
+    (which lists the host sites) must not be applied to same-origin requests.
+    Best-effort; returns "" if it can't be derived."""
+    try:
+        p = _embed_urlparse(request.host_url or "")
+        if p.scheme and p.netloc:
+            return f"{p.scheme}://{p.netloc}"
+    except Exception:
+        pass
+    return ""
+
+
+def _embed_frame_ancestors(row):
+    """Build the CSP `frame-ancestors` value that controls WHO may iframe the
+    embedded concierge — the browser-enforced gate that stops unauthorized
+    third-party embedding (it can't be spoofed by a forged Referer/Origin).
+
+    - No / invalid key (row is None): only our own origin ('self') may frame it.
+      Direct visits are unaffected — frame-ancestors restricts framing, not
+      navigation.
+    - Valid key: 'self' plus the key's allow-listed origins. If the client
+      explicitly opted into any origin ('*' in the allowlist), allow '*'.
+    """
+    if not row:
+        return "'self'"
+    allowlist = row.get("origin_allowlist")
+    al = allowlist if isinstance(allowlist, list) else []
+    if isinstance(allowlist, str):
+        try:
+            al = json.loads(allowlist)
+        except Exception:
+            al = []
+    if "*" in al:
+        return "*"
+    # Keep only well-formed scheme://host origins. A stray value can't widen the
+    # policy, but it would make the whole header invalid (browsers drop it).
+    origins = []
+    for o in al:
+        o = (o or "").strip().rstrip("/")
+        if "://" in o and " " not in o and o not in origins:
+            origins.append(o)
+    return " ".join(["'self'"] + origins)
+
+
+def _embed_unauthorized_response():
+    """403 page served when /embed/concierge is loaded with an embed key that
+    doesn't resolve to an ENABLED key (revoked / disabled / typo). Failing
+    CLOSED here means a disabled client embed visibly stops working instead of
+    silently serving an unauthorized concierge."""
+    html = (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        "<title>Embed not authorized</title></head>"
+        "<body style='margin:0;font-family:system-ui,sans-serif;"
+        "display:flex;align-items:center;justify-content:center;height:100vh;"
+        "background:transparent;color:#444'>"
+        "<div style='text-align:center;max-width:320px;padding:16px'>"
+        "<p style='font-size:14px;line-height:1.5;margin:0'>"
+        "This concierge embed is not authorized. Please contact the site owner."
+        "</p></div></body></html>"
+    )
+    resp = Response(html, status=403, mimetype="text/html")
+    resp.headers["Content-Security-Policy"] = "frame-ancestors 'self'"
+    return resp
+
+
 @app.before_request
 def _embed_auth():
     from flask import g
@@ -5727,7 +5796,14 @@ def _embed_auth():
         row = _embed_resolve_key(key)
         if not row or not row.get("enabled"):
             return jsonify({"error": "invalid embed key"}), 403
-        if origin and not _embed_origin_allowed(origin, row.get("origin_allowlist")):
+        # The embedded concierge (served from /embed/concierge) makes SAME-ORIGIN
+        # API calls, so they carry OUR origin, not the host site's. The host
+        # origin was already gated at iframe-load time via the CSP frame-ancestors
+        # on /embed/concierge, so we only apply the per-key origin allowlist to
+        # genuine CROSS-ORIGIN keyed requests (the direct-fetch widget model).
+        own = _embed_own_origin()
+        if (origin and origin != own
+                and not _embed_origin_allowed(origin, row.get("origin_allowlist"))):
             return jsonify({"error": "origin not allowed for this embed key"}), 403
         g._embed_keyed = True
         g._embed_key = key
@@ -5826,8 +5902,30 @@ def embed_concierge():
 
     Served under /embed (already exempt from chat-only mode) with NO website
     feature gate, so the embedded concierge keeps working even when the operator
-    turns the public website OFF."""
-    return _render_app_shell_response()
+    turns the public website OFF.
+
+    AUTHORIZATION: who may iframe this widget is enforced by the CSP
+    `frame-ancestors` header set below — only the origins allow-listed for the
+    request's embed key (or just our own origin when no/invalid key). A key that
+    is present but doesn't resolve to an ENABLED key fails closed (403). The
+    validated key is injected into the served shell (see embed_key= below) so the
+    concierge's same-origin /api/* calls carry X-Embed-Key for _embed_auth."""
+    key = (request.args.get("embed_key", "") or
+           request.headers.get("X-Embed-Key", "")).strip()
+    row = _embed_resolve_key(key) if key else None
+    # An explicit key that doesn't resolve to an enabled key → refuse, so a
+    # revoked/disabled client embed visibly stops working (fail closed).
+    if key and (not row or not row.get("enabled")):
+        return _embed_unauthorized_response()
+    resp = _render_app_shell_response(embed_key=(key if row else ""))
+    try:
+        resp.headers["Content-Security-Policy"] = (
+            "frame-ancestors " + _embed_frame_ancestors(row))
+    except Exception:
+        # Never serve the embed without a framing gate — fail to the strictest
+        # policy (own origin only) if the allowlist can't be built.
+        resp.headers["Content-Security-Policy"] = "frame-ancestors 'self'"
+    return resp
 
 
 _WIDGET_ALLOWED = {"chat-ui.js", "chat-ui.css", "voice.js"}
@@ -8073,7 +8171,7 @@ def serve_standalone_page(slug):
     return _render_app_shell_response(page=page, section_ids=section_ids)
 
 
-def _render_app_shell_response(page=None, section_ids=None, initial_section_dom_id=None, seo_overrides=None):
+def _render_app_shell_response(page=None, section_ids=None, initial_section_dom_id=None, seo_overrides=None, embed_key=None):
     """
     Serve the public site HTML shell with SEO meta tags injected
     server-side. Used by both the homepage at "/" (page=None) and
@@ -8543,6 +8641,42 @@ def _render_app_shell_response(page=None, section_ids=None, initial_section_dom_
         # visitor never gets new front-end code. Force revalidation on every
         # load (the bundle itself stays forever-cacheable via its hashed URL),
         # so a single refresh always fetches the latest bundle.
+        # Embed widget mode: when served at /embed/concierge with a VALID key,
+        # inject the key + a tiny fetch wrapper so the concierge's SAME-ORIGIN
+        # /api/* calls carry X-Embed-Key. This ties the embedded session to its
+        # key (validated by _embed_auth) so the embed key control model applies
+        # to the iframe flow. The homepage at "/" passes embed_key=None and so
+        # injects nothing — it stays keyless / first-party (behavior unchanged).
+        # Best-effort: any failure leaves the page working without the header.
+        if embed_key:
+            try:
+                safe_key = json.dumps(str(embed_key))
+                inject = (
+                    "<script>(function(){"
+                    "window.__AAP_EMBED_KEY__=" + safe_key + ";"
+                    "var k=window.__AAP_EMBED_KEY__;"
+                    "if(!k||!window.fetch)return;"
+                    "var _f=window.fetch;"
+                    "window.fetch=function(input,init){try{"
+                    "var u=(typeof input===\"string\")?input:((input&&input.url)||\"\");"
+                    "var api=(u.indexOf(\"/api/\")===0)||"
+                    "(u.indexOf(location.origin+\"/api/\")===0);"
+                    "if(api){init=init||{};"
+                    "var h=new Headers((init&&init.headers)||"
+                    "((typeof input!==\"string\"&&input&&input.headers)||{}));"
+                    "if(!h.has(\"X-Embed-Key\"))h.set(\"X-Embed-Key\",k);"
+                    "init.headers=h;}}catch(e){}"
+                    "return _f.call(this,input,init);};"
+                    "})();</script>"
+                )
+                if "</head>" in html_content:
+                    html_content = html_content.replace(
+                        "</head>", inject + "\n</head>", 1)
+                else:
+                    html_content = inject + html_content
+            except Exception as e:
+                print(f"[serve_index] embed key injection failed: {e}; continuing")
+
         resp = Response(html_content, mimetype="text/html")
         resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return resp
