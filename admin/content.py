@@ -367,11 +367,11 @@ def admin_create_team_member():
     """POST /admin/api/team — Create a new team member."""
     data = request.get_json()
     item = execute_db(
-        """INSERT INTO team_members (name, title, bio, image_url, sort_order)
-           VALUES (%s, %s, %s, %s, %s) RETURNING *""",
+        """INSERT INTO team_members (name, title, bio, image_url, sort_order, extra)
+           VALUES (%s, %s, %s, %s, %s, %s::jsonb) RETURNING *""",
         (data.get("name", ""), data.get("title", ""),
          data.get("bio", ""), data.get("image_url", ""),
-         data.get("sort_order", 0))
+         data.get("sort_order", 0), json.dumps(data.get("extra") or {}))
     )
     return jsonify(item), 201
 
@@ -381,14 +381,17 @@ def admin_create_team_member():
 def admin_update_team_member(item_id):
     """PUT /admin/api/team/<id> — Update a team member."""
     data = request.get_json()
+    # `extra` (per-member custom fields, JSONB): only overwrite when the caller sends it —
+    # COALESCE(NULL, extra) preserves the existing value so older clients can't wipe it.
+    extra_arg = json.dumps(data["extra"]) if "extra" in data else None
     item = execute_db(
         """UPDATE team_members SET
              name = %s, title = %s, bio = %s,
-             image_url = %s, sort_order = %s
+             image_url = %s, sort_order = %s, extra = COALESCE(%s::jsonb, extra)
            WHERE id = %s RETURNING *""",
         (data.get("name", ""), data.get("title", ""),
          data.get("bio", ""), data.get("image_url", ""),
-         data.get("sort_order", 0), item_id)
+         data.get("sort_order", 0), extra_arg, item_id)
     )
     if not item:
         return jsonify({"error": "Team member not found"}), 404

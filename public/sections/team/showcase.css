@@ -1,0 +1,59 @@
+/* public/sections/team/showcase.css — scoped styles for the team "showcase" variant (Option B).
+   Auto-loaded by the server only when this variant is active. Namespaced under .tpl-team-showcase /
+   .tpl-show-* so it never collides with the rest of the site. Uses the options-driven CSS vars set
+   on the root: --tpl-cols (columns) and --tpl-accent (section accent); cards may set --card-accent. */
+
+.tpl-team-showcase {
+  display: grid;
+  grid-template-columns: repeat(var(--tpl-cols, 3), minmax(0, 1fr));
+  gap: var(--space-lg, 1.5rem);
+  max-width: 72rem;
+  margin: 0 auto;
+}
+@media (max-width: 900px) { .tpl-team-showcase { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .tpl-team-showcase { grid-template-columns: 1fr; } }
+
+.tpl-show-card {
+  display: flex;
+  flex-direction: column;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--card-accent, var(--tpl-accent, rgba(255, 255, 255, 0.10)));
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+/* media (image/video) + the play affordance */
+.tpl-show-media { position: relative; aspect-ratio: 16 / 10; background: rgba(0, 0, 0, 0.25); }
+.tpl-show-video, .tpl-show-thumb, .tpl-show-photo { width: 100%; height: 100%; object-fit: cover; display: block; }
+.tpl-show-photo { aspect-ratio: 16 / 10; }
+.tpl-show-ph {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 2.5rem; font-weight: 700; background: rgba(255, 255, 255, 0.08);
+}
+.tpl-show-play {
+  position: absolute; inset: 0; margin: auto; width: 56px; height: 56px; border-radius: 50%;
+  border: none; cursor: pointer; font-size: 1.1rem; color: #111;
+  background: var(--card-accent, var(--tpl-accent, #fff)); opacity: 0.92;
+  display: flex; align-items: center; justify-content: center;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+.tpl-show-play:hover { transform: scale(1.08); opacity: 1; }
+.tpl-show-media.playing .tpl-show-play { display: none; }
+
+.tpl-show-body { padding: var(--space-md, 1rem) var(--space-lg, 1.5rem) var(--space-lg, 1.5rem); }
+.tpl-show-name { margin: 0 0 0.1rem; font-size: 1.2rem; }
+.tpl-show-title { margin: 0 0 0.5rem; opacity: 0.8; font-size: 0.9rem; }
+.tpl-show-tagline { margin: 0 0 0.5rem; font-style: italic; color: var(--card-accent, var(--tpl-accent, inherit)); }
+.tpl-show-bio { margin: 0; line-height: 1.55; opacity: 0.9; font-size: 0.92rem; }
+
+/* video lightbox (built by showcase.js for YouTube/Vimeo URLs) */
+.tpl-show-lightbox {
+  position: fixed; inset: 0; z-index: 2147483600; display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.85); backdrop-filter: blur(4px); padding: 4vmin;
+}
+.tpl-show-lb-inner { position: relative; width: min(960px, 92vw); aspect-ratio: 16 / 9; }
+.tpl-show-lb-frame, .tpl-show-lb-frame iframe { width: 100%; height: 100%; border: 0; border-radius: 12px; }
+.tpl-show-lb-close {
+  position: absolute; top: -2.6rem; right: 0; width: 38px; height: 38px; border-radius: 50%;
+  border: none; cursor: pointer; font-size: 1.3rem; background: #fff; color: #111;
+}

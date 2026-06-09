@@ -8217,48 +8217,131 @@ def _build_loading_initials_and_name():
         return "CS", "Loading"
 
 
-# --- Section template variants: SERVER-RENDERED path (Option B) -----------------------------------
-# A section's chosen variant (page_sections.settings.variant) can be a Jinja partial at
-# templates/sections/<slug>/<variant>.html. We render it server-side with the section's view-model
-# and inject it into the page HTML (so it's in the initial source = SEO-friendly, and a designer
-# authors plain HTML/Jinja). This mirrors the hero's server-render precedent. The chosen-variant
-# storage + the admin "Layout" picker are SHARED with the client-side (Option A) path. FAIL-SAFE:
-# any miss/error returns "" so the section falls back to its client-rendered default — never a crash.
-# POC: wired for 'team' (variant 'spotlight'); 'default' stays client-rendered.
-_SSR_SECTION_VARIANTS = {
-    "team": {"spotlight"},   # slug -> variant keys that have a server-side Jinja partial
+# --- Section template system (Option B — server-rendered Jinja partials, full) -------------------
+# ONE registry = the single source of truth for server-rendered section variants. Per section: a
+# `loader` (-> the list of item dicts the partial receives as `items`). Per variant: a human `label`,
+# an `options` schema (section-level config, stored in page_sections.settings.variant_options), and
+# `item_fields` (extra per-row fields, stored in the item table's `extra` JSONB, edited in admin).
+# This drives EVERYTHING: server render + page injection, per-variant scoped CSS/JS assets
+# (public/sections/<slug>/<variant>.{css,js}), and the admin Layout / options / custom-field UI (via
+# the /admin/api/section-templates manifest). Adding a variant = a Jinja partial + (optional) assets
+# + one entry here. 'default' is implicit = the client render. FAIL-SAFE everywhere → never a crash.
+
+def _team_section_items():
+    return query_db("SELECT * FROM team_members ORDER BY sort_order ASC") or []
+
+
+SECTION_TEMPLATE_REGISTRY = {
+    "team": {
+        "loader": _team_section_items,   # -> list[dict] (each may carry an `extra` JSONB of custom fields)
+        "variants": {
+            "spotlight": {
+                "label": "Spotlight (server-rendered)",
+                "options": [],
+                "item_fields": [],
+            },
+            "showcase": {
+                "label": "Showcase — video, columns, animation",
+                "options": [
+                    {"key": "columns", "label": "Columns", "type": "select",
+                     "choices": ["1", "2", "3", "4"], "default": "3"},
+                    {"key": "reveal", "label": "Animate cards on scroll", "type": "bool", "default": True},
+                    {"key": "autoplay_video", "label": "Autoplay member videos (muted)",
+                     "type": "bool", "default": False},
+                    {"key": "accent", "label": "Section accent color (hex)", "type": "text", "default": ""},
+                ],
+                "item_fields": [
+                    {"key": "video_url", "label": "Video URL (YouTube / Vimeo / .mp4)", "type": "url"},
+                    {"key": "tagline", "label": "Tagline / one-liner", "type": "text"},
+                    {"key": "accent", "label": "Card accent color (hex)", "type": "text"},
+                ],
+            },
+        },
+    },
 }
 
 
-def _section_view_model(slug):
-    """Load a section's data — the SAME view-model the client gets from /api/page-bundle. The
-    template only DISPLAYS this; adding a template never changes the data or its source."""
-    if slug == "team":
-        return {"members": query_db("SELECT * FROM team_members ORDER BY sort_order ASC") or []}
-    return {}
+def _section_variants(slug):
+    return (SECTION_TEMPLATE_REGISTRY.get(slug) or {}).get("variants") or {}
 
 
-def _render_section_partial(slug):
-    """Return server-rendered HTML for a section IF its selected variant is a Jinja partial, else "".
-    Reads page_sections.settings.variant; renders templates/sections/<slug>/<variant>.html with the
-    view-model. Fail-safe (returns "" on disabled/default/missing/error → client renders default)."""
+def _section_items(slug):
+    """Load a section's items (the view-model) — same data the client gets; templates only DISPLAY it."""
+    try:
+        loader = (SECTION_TEMPLATE_REGISTRY.get(slug) or {}).get("loader")
+        return loader() if callable(loader) else []
+    except Exception as e:
+        capture_exc(e, "section_items")
+        return []
+
+
+def _section_active_variant(slug):
+    """The section's selected SERVER-SIDE variant, or None (default / disabled / unknown variant)."""
     try:
         row = query_db("SELECT settings, enabled FROM page_sections WHERE slug=%s", (slug,), fetchone=True)
         if not isinstance(row, dict) or not row.get("enabled"):
-            return ""
+            return None
         st = row.get("settings")
         if isinstance(st, str):
             try:
                 st = json.loads(st or "{}")
             except ValueError:
                 st = {}
-        variant = ((st or {}).get("variant") or "default")
-        if variant not in _SSR_SECTION_VARIANTS.get(slug, set()):
-            return ""   # 'default' or a client-only variant → let the client render
-        return render_template("sections/%s/%s.html" % (slug, variant), **_section_view_model(slug))
+        variant = (st or {}).get("variant") or "default"
+        return variant if variant in _section_variants(slug) else None
+    except Exception as e:
+        capture_exc(e, "section_active_variant")
+        return None
+
+
+def _section_variant_options(slug, variant):
+    """Merge stored settings.variant_options over the variant's declared option defaults."""
+    out = {}
+    for opt in ((_section_variants(slug).get(variant) or {}).get("options") or []):
+        out[opt["key"]] = opt.get("default")
+    try:
+        row = query_db("SELECT settings FROM page_sections WHERE slug=%s", (slug,), fetchone=True)
+        st = (row or {}).get("settings") if isinstance(row, dict) else None
+        if isinstance(st, str):
+            st = json.loads(st or "{}")
+        stored = ((st or {}).get("variant_options") or {})
+        if isinstance(stored, dict):
+            out.update(stored)
+    except Exception:
+        pass
+    return out
+
+
+def _render_section_partial(slug):
+    """Server-render the section's selected Jinja variant with its view-model + options, else "" so
+    the client renders the default. Fail-safe — never raises into the page assembler."""
+    try:
+        variant = _section_active_variant(slug)
+        if not variant:
+            return ""
+        return render_template(
+            "sections/%s/%s.html" % (slug, variant),
+            items=_section_items(slug),
+            options=_section_variant_options(slug, variant),
+        )
     except Exception as e:
         capture_exc(e, "render_section_partial")
         return ""
+
+
+@app.route("/admin/api/section-templates", methods=["GET"])
+@admin_required
+def admin_section_templates():
+    """Manifest of server-rendered section variants — the SINGLE source for the admin UI: per section,
+    each variant's key + label + options schema + per-item custom-field schema."""
+    out = {}
+    for slug, reg in SECTION_TEMPLATE_REGISTRY.items():
+        out[slug] = [
+            {"key": vk, "label": vm.get("label") or vk,
+             "options": vm.get("options") or [], "item_fields": vm.get("item_fields") or []}
+            for vk, vm in (reg.get("variants") or {}).items()
+        ]
+    return jsonify(out)
 
 
 @app.route("/")
@@ -8493,15 +8576,42 @@ def _render_app_shell_response(page=None, section_ids=None, initial_section_dom_
         elif sentry_html:
             html_content = html_content.replace("</head>", sentry_html + "\n</head>", 1)
 
-        # Section template variants — SERVER-RENDERED path (Option B). When a section's selected
-        # variant is a Jinja partial, render it here so it lands in the initial HTML source (SEO).
-        # Fail-safe: _render_section_partial returns "" on default/disabled/missing/error, and a
-        # missing placeholder makes .replace a harmless no-op — so this can never break the page.
-        try:
-            html_content = html_content.replace("<!-- SECTION_TEAM_INJECT -->", _render_section_partial("team"))
-        except Exception as e:
-            capture_exc(e, "section_inject.team")
-            html_content = html_content.replace("<!-- SECTION_TEAM_INJECT -->", "")
+        # Section templates (Option B) — replace every <!-- SECTION_INJECT:<slug> --> with that
+        # section's server-rendered variant (or "" → the client renders the default), then inject the
+        # active variant's scoped CSS/JS assets (public/sections/<slug>/<variant>.{css,js}) when they
+        # exist. Generic (B-enabling a section = a placeholder + a registry entry) + fully fail-safe:
+        # a render error yields "", and a missing placeholder makes .replace/re.sub a harmless no-op.
+        _ssr_active = []
+
+        def _section_inject(_m):
+            _slug = _m.group(1)
+            try:
+                _h = _render_section_partial(_slug)
+                if _h:
+                    _v = _section_active_variant(_slug)
+                    if _v:
+                        _ssr_active.append((_slug, _v))
+                return _h
+            except Exception as _e:
+                capture_exc(_e, "section_inject")
+                return ""
+
+        html_content = re.sub(r"<!--\s*SECTION_INJECT:([a-z0-9_-]+)\s*-->", _section_inject, html_content)
+        if _ssr_active:
+            _css_links, _js_links = "", ""
+            for _slug, _v in _ssr_active:
+                _rel = "sections/%s/%s" % (_slug, _v)
+                try:
+                    if os.path.exists(os.path.join(app.static_folder, _rel + ".css")):
+                        _css_links += '<link rel="stylesheet" href="/%s.css?v=%s">\n' % (_rel, _STYLES_CSS_VERSION)
+                    if os.path.exists(os.path.join(app.static_folder, _rel + ".js")):
+                        _js_links += '<script src="/%s.js?v=%s" defer></script>\n' % (_rel, _STYLES_CSS_VERSION)
+                except Exception:
+                    pass
+            if _css_links:
+                html_content = html_content.replace("</head>", _css_links + "</head>", 1)
+            if _js_links:
+                html_content = html_content.replace("</body>", _js_links + "</body>", 1)
 
         # ----------------------------------------------------------------
         # First-paint logo treatment + accent-gradient body class injection

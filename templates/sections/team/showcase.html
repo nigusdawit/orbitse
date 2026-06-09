@@ -1,0 +1,43 @@
+{# templates/sections/team/showcase.html — the RICH Option-B demo: exercises the whole system.
+
+   VIEW-MODEL: items = [{ name, title, bio, image_url, extra:{ video_url, tagline, accent } }]
+   OPTIONS  : options = { columns, reveal, autoplay_video, accent }  (section-level, admin-set)
+
+   Demonstrates: per-variant OPTIONS (columns grid, reveal animation, autoplay, accent), per-item
+   CUSTOM FIELDS (video_url / tagline / accent), VIDEO (inline .mp4 or YouTube/Vimeo lightbox via the
+   JS hook), CSS ANIMATION (reuses the site's .fade-in-view scroll reveal), and a JS INIT HOOK
+   (data-tpl-init="teamShowcase" -> public/sections/team/showcase.js). Jinja autoescaping is ON. #}
+<div class="tpl-team-showcase"
+     data-ssr-section="team"
+     data-tpl-init="teamShowcase"
+     data-tpl-options='{{ options | tojson }}'
+     style="--tpl-cols: {{ options.columns or 3 }};{% if options.accent %} --tpl-accent: {{ options.accent }};{% endif %}">
+  {% for m in items %}
+  {% set ex = m.extra or {} %}
+  <article class="tpl-show-card{% if options.reveal %} fade-in-view stagger-{{ (loop.index0 % 3) + 1 }}{% endif %}"
+           {% if ex.accent %}style="--card-accent: {{ ex.accent }};"{% endif %}>
+    {% if ex.video_url %}
+      <div class="tpl-show-media" data-video="{{ ex.video_url }}">
+        {% if ex.video_url.endswith('.mp4') %}
+          <video class="tpl-show-video" src="{{ ex.video_url }}" muted playsinline preload="metadata"></video>
+        {% elif m.image_url %}
+          <img class="tpl-show-thumb" src="{{ m.image_url }}" alt="{{ m.name }}" loading="lazy">
+        {% else %}
+          <div class="tpl-show-thumb tpl-show-ph">{{ (m.name or '?')[:1] | upper }}</div>
+        {% endif %}
+        <button class="tpl-show-play" type="button" aria-label="Play video for {{ m.name }}">▶</button>
+      </div>
+    {% elif m.image_url %}
+      <img class="tpl-show-photo" src="{{ m.image_url }}" alt="{{ m.name }}" loading="lazy">
+    {% else %}
+      <div class="tpl-show-photo tpl-show-ph">{{ (m.name or '?')[:1] | upper }}</div>
+    {% endif %}
+    <div class="tpl-show-body">
+      <h3 class="tpl-show-name">{{ m.name }}</h3>
+      {% if m.title %}<p class="tpl-show-title">{{ m.title }}</p>{% endif %}
+      {% if ex.tagline %}<p class="tpl-show-tagline">“{{ ex.tagline }}”</p>{% endif %}
+      {% if m.bio %}<p class="tpl-show-bio">{{ m.bio }}</p>{% endif %}
+    </div>
+  </article>
+  {% endfor %}
+</div>

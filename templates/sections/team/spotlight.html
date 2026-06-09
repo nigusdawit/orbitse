@@ -12,7 +12,7 @@
    data-ssr-section="team" so the client's renderTeam() detects the server render and skips
    (it won't overwrite this markup). #}
 <div class="tpl-team-spotlight" data-ssr-section="team">
-  {% for m in members %}
+  {% for m in items %}
     <article class="tpl-team-spot-card">
       {% if m.image_url %}
         <img class="tpl-team-spot-photo" src="{{ m.image_url }}" alt="{{ m.name }}" loading="lazy">

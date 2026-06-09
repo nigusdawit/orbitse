@@ -123,3 +123,77 @@ def test_section_partial_failsafe_on_unknown_variant():
         assert app._render_section_partial("team") == ""   # early-returns '' (variant not registered)
     finally:
         app.execute_db("UPDATE page_sections SET settings='{}'::jsonb WHERE slug='team'")
+
+
+# ---- Full system: manifest, options, per-item custom fields, assets ----------
+
+def test_section_templates_manifest():
+    """The manifest endpoint is the single source: variants + labels + options + item_fields."""
+    d = _sa().get("/admin/api/section-templates").get_json()
+    assert "team" in d
+    keys = [v["key"] for v in d["team"]]
+    assert "spotlight" in keys and "showcase" in keys
+    showcase = next(v for v in d["team"] if v["key"] == "showcase")
+    assert any(o["key"] == "columns" for o in showcase["options"])
+    assert any(f["key"] == "video_url" for f in showcase["item_fields"])
+
+
+def test_team_extra_roundtrips_and_is_preserved():
+    """Per-member custom fields: create stores `extra`; an update WITHOUT extra preserves it; an
+    update WITH extra replaces it. (The additivity is what stops the existing form wiping it.)"""
+    c = _sa()
+    r = c.post("/admin/api/team", headers=_CSRF,
+               json={"name": "Extra Tester", "title": "QA",
+                     "extra": {"video_url": "https://x.test/v.mp4", "tagline": "ships it"}})
+    assert r.status_code == 201
+    mid = r.get_json()["id"]
+
+    def _extra():
+        row = app.query_db("SELECT name, extra FROM team_members WHERE id=%s", (mid,), fetchone=True)
+        ex = row["extra"]
+        return (row["name"], json.loads(ex) if isinstance(ex, str) else ex)
+
+    try:
+        _, ex = _extra()
+        assert ex.get("video_url") == "https://x.test/v.mp4" and ex.get("tagline") == "ships it"
+        c.put("/admin/api/team/%d" % mid, headers=_CSRF, json={"name": "Extra Tester 2"})  # no extra
+        name2, ex2 = _extra()
+        assert name2 == "Extra Tester 2" and ex2.get("tagline") == "ships it"               # preserved
+        c.put("/admin/api/team/%d" % mid, headers=_CSRF, json={"extra": {"tagline": "new"}})  # replace
+        _, ex3 = _extra()
+        assert ex3.get("tagline") == "new" and "video_url" not in ex3
+    finally:
+        app.execute_db("DELETE FROM team_members WHERE id=%s", (mid,))
+
+
+def test_showcase_renders_options_fields_and_assets_in_source():
+    """The rich variant: options (columns/reveal), per-item custom fields (tagline/video), and the
+    per-template CSS/JS assets all land in the server source."""
+    app.execute_db("DELETE FROM team_members WHERE name='Showcase Member'")
+    app.execute_db(
+        "INSERT INTO team_members (name, title, bio, image_url, sort_order, extra) "
+        "VALUES ('Showcase Member','Director','Bio.','',0,"
+        "'{\"video_url\":\"https://x.test/clip.mp4\",\"tagline\":\"makes magic\"}'::jsonb)")
+    app.execute_db(
+        "UPDATE page_sections SET enabled=TRUE, "
+        "settings='{\"variant\":\"showcase\",\"variant_options\":{\"columns\":\"4\",\"reveal\":true}}'::jsonb "
+        "WHERE slug='team'")
+    try:
+        html = app.app.test_client().get("/").get_data(as_text=True)
+        assert "tpl-team-showcase" in html                # the showcase partial server-rendered
+        assert 'data-tpl-init="teamShowcase"' in html     # JS init hook wired
+        assert "--tpl-cols: 4" in html                    # OPTION applied (columns)
+        assert "makes magic" in html                      # per-item CUSTOM FIELD (tagline)
+        assert "https://x.test/clip.mp4" in html          # per-item VIDEO field
+        assert "fade-in-view" in html                     # reveal option → animation class
+        assert "/sections/team/showcase.css" in html      # per-template CSS asset injected
+        assert "/sections/team/showcase.js" in html       # per-template JS asset injected
+    finally:
+        app.execute_db("UPDATE page_sections SET settings='{}'::jsonb WHERE slug='team'")
+        app.execute_db("DELETE FROM team_members WHERE name='Showcase Member'")
+
+
+def test_variant_options_defaults_merge():
+    app.execute_db("UPDATE page_sections SET settings='{}'::jsonb WHERE slug='team'")
+    opts = app._section_variant_options("team", "showcase")
+    assert opts.get("columns") == "3" and opts.get("reveal") is True   # declared defaults applied

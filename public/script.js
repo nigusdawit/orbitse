@@ -623,6 +623,26 @@ function renderSectionTemplate(slug, items) {
   catch (e) { try { return (set.default || function () { return ''; })(items || []); } catch (_e) { return ''; } }
 }
 
+/* Section-template JS init dispatcher (Option B). A server-rendered variant can attach behavior:
+   its root carries data-tpl-init="<name>" (+ data-tpl-options as JSON). A per-template JS asset
+   (public/sections/<slug>/<variant>.js) registers window.SECTION_TEMPLATE_INIT[name] = fn; this runs
+   it ONCE per root (idempotent via data-tpl-inited), so it works regardless of whether the asset or
+   this dispatcher loads first. */
+window.SECTION_TEMPLATE_INIT = window.SECTION_TEMPLATE_INIT || {};
+function runSectionTemplateInit() {
+  document.querySelectorAll('[data-tpl-init]:not([data-tpl-inited])').forEach(function (el) {
+    var fn = window.SECTION_TEMPLATE_INIT[el.getAttribute('data-tpl-init')];
+    if (typeof fn !== 'function') return;   // asset not registered yet — it'll re-trigger us on load
+    var opts = {};
+    try { opts = JSON.parse(el.getAttribute('data-tpl-options') || '{}'); } catch (e) {}
+    el.setAttribute('data-tpl-inited', '1');
+    try { fn(el, opts); } catch (e) {}
+  });
+}
+window.runSectionTemplateInit = runSectionTemplateInit;
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', runSectionTemplateInit);
+else runSectionTemplateInit();
+
 /**
  * Renders testimonial cards — now via the section template registry, so the layout
  * (grid / carousel / …) is admin-selectable. The DATA (`testimonials`) and its source

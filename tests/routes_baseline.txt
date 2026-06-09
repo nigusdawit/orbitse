@@ -209,6 +209,7 @@ GET /admin/api/scrape-schedules
 GET /admin/api/scraper-settings
 GET /admin/api/search
 GET /admin/api/secrets/status
+GET /admin/api/section-templates
 GET /admin/api/section-visibility
 GET /admin/api/sentry/alerts
 GET /admin/api/seo
