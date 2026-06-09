@@ -7383,10 +7383,21 @@
         onTtsProviderChange();
         onSttProviderChange();
         vapiLoadStatus();   // Vapi integration panel (super-admin; no-op if absent)
+        voiceSubtab('settings');   // deterministic default sub-tab on open
       } catch (err) {
         console.error('Error loading voice settings:', err);
         window.appReportError(err, 'app-main.js:loadVoiceSettings');
       }
+    }
+
+    /* Voice tab sub-tabs (Settings / Welcome Intros / Usage / Vapi) — shows one subpanel. */
+    function voiceSubtab(name, btn) {
+      document.querySelectorAll('#tab-voice .voice-subpanel').forEach(function (p) {
+        p.style.display = (p.getAttribute('data-vsub') === name) ? '' : 'none';
+      });
+      document.querySelectorAll('#tab-voice .voice-subtab-btn').forEach(function (b) {
+        b.classList.toggle('active', b.getAttribute('data-vsub') === name);
+      });
     }
 
     /* ===== Vapi (voice AI) integration panel — super-admin. No-ops for non-super

@@ -2,14 +2,31 @@
    (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
    context (appearance / has_feature / is_super_admin). #}
 <div id="tab-voice" class="tab-content">
+    <style>
+      #tab-voice .voice-subnav { display:flex; gap:0.25rem; flex-wrap:wrap; border-bottom:1px solid var(--admin-border); margin:0.5rem 0 1.25rem; }
+      #tab-voice .voice-subtab-btn { padding:0.5rem 0.9rem; background:none; border:none; border-bottom:2px solid transparent; color:var(--admin-text-muted); font:inherit; font-size:0.9rem; cursor:pointer; }
+      #tab-voice .voice-subtab-btn:hover { color:var(--admin-text); }
+      #tab-voice .voice-subtab-btn.active { color:var(--admin-text); border-bottom-color:var(--admin-accent, #c9a96e); font-weight:600; }
+    </style>
     <div class="section-header-admin">
       <div>
         <h2>Voice Agent</h2>
         <p>Add a proactive voice layer to your site: personalized welcome messages, voice input, and AI voice replies.</p>
       </div>
+      <button class="btn btn-primary" onclick="saveVoiceSettings(this)" data-testid="button-save-voice-global">💾 Save settings</button>
+    </div>
+
+    <div class="voice-subnav" role="tablist">
+      <button class="voice-subtab-btn active" data-vsub="settings" onclick="voiceSubtab('settings', this)" data-testid="vsub-settings">Settings</button>
+      <button class="voice-subtab-btn" data-vsub="intros" onclick="voiceSubtab('intros', this)" data-testid="vsub-intros">Welcome Intros</button>
+      <button class="voice-subtab-btn" data-vsub="usage" onclick="voiceSubtab('usage', this)" data-testid="vsub-usage">Usage</button>
+      {% if is_super_admin() %}
+      <button class="voice-subtab-btn" data-vsub="vapi" onclick="voiceSubtab('vapi', this)" data-testid="vsub-vapi">Vapi</button>
+      {% endif %}
     </div>
 
     {% if is_super_admin() %}
+    <div class="voice-subpanel" data-vsub="vapi" style="display:none;">
     <!-- ============== Vapi (voice AI) — platform integration (super-admin) ============== -->
     <div class="form-card" id="vapi-panel">
       <style>
@@ -61,8 +78,10 @@
         <div id="vapi-in-result" class="vp-muted" style="margin-top:0.4rem;"></div>
       </div>
     </div>
+    </div>
     {% endif %}
 
+    <div class="voice-subpanel" data-vsub="settings">
     <!-- ============== Section 1: Master toggles + defaults ============== -->
     <div class="form-card" id="voice-settings-form">
       <h3 style="margin-top:0;">Voice Settings</h3>
@@ -202,8 +221,10 @@
         <p class="help-text" style="margin: 0; font-size: 0.8rem; color: var(--admin-text-muted);" id="elevenlabs-status-text">Loading…</p>
       </div>
     </div>
+    </div>
 
     <!-- ============== Section 2: Voice intros library ============== -->
+    <div class="voice-subpanel" data-vsub="intros" style="display:none;">
     <div style="margin-top: 1.5rem;">
       <div class="section-header-admin">
         <div>
@@ -314,8 +335,10 @@
         </tbody>
       </table>
     </div>
+    </div>
 
     <!-- ============== Section 3: Usage stats (for billing) ============== -->
+    <div class="voice-subpanel" data-vsub="usage" style="display:none;">
     <div style="margin-top: 1.5rem;">
       <div class="section-header-admin">
         <div>
@@ -349,5 +372,6 @@
           <tr><td colspan="3" class="empty-state">No usage yet.</td></tr>
         </tbody>
       </table>
+    </div>
     </div>
   </div>
