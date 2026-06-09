@@ -3,9 +3,16 @@
 How a web developer adds new ways to **display** a page section, **without** touching the section's
 data or behavior. Two authoring models — **A** (client-side JS template; sample testimonials/carousel)
 and **B** (server-rendered Jinja partial → SEO; sample team/spotlight + the full-featured
-team/showcase). Both share one selection mechanism (`page_sections.settings.variant`), one admin
-picker, and one manifest. **See "Full capability reference" at the bottom** for custom fields, options,
-JS hooks, and scoped assets.
+team/showcase + faq/cards). Both share one selection mechanism (`page_sections.settings.variant`), one
+admin picker, and one manifest. **See "Full capability reference" at the bottom** for custom fields,
+options, JS hooks, and scoped assets.
+
+> **Every built-in LIST section is pre-wired.** team, testimonials, faq, blog, services, events, and
+> experiences each already have a generic loader, a `<!-- SECTION_INJECT:<slug> -->` placeholder, and a
+> `[data-ssr-section]` client-skip — so adding a server-rendered look to ANY of them needs only a
+> registry variant + a Jinja partial (steps 1–2 of the recipe; no per-section plumbing). **Custom**
+> (admin-created) sections render client-side but are bridged into the **same manifest** — see
+> [Custom sections](#custom-sections-the-bridge) below.
 
 ## The model — three separate layers
 
@@ -134,11 +141,47 @@ manifest at **`GET /admin/api/section-templates`** exposes it to the admin UI. A
    Read `items` (+ `m.extra.<key>`) and `options.<key>`. Jinja autoescapes — safe by default.
 3. **Assets** (optional): `public/sections/<slug>/<variant>.css` and `.js`. The JS does
    `(window.SECTION_TEMPLATE_INIT ||= {}).<name> = function(rootEl, options){…}`.
-4. **Placeholder**: ensure `<!-- SECTION_INJECT:<slug> -->` sits in the section's shell in
-   `public/index.html` (one-time per section), and the client renderer early-skips on
-   `[data-ssr-section]`.
+4. **Placeholder + client-skip**: for the seven pre-wired list sections (team, testimonials, faq, blog,
+   services, events, experiences) this is **already done** — skip it. Only when wiring a brand-new
+   built-in section do you add `<!-- SECTION_INJECT:<slug> -->` to its shell in `public/index.html`, a
+   `[data-ssr-section]` early-skip in its client renderer, and a `loader` + `_BUILTIN_SECTION_TABLES`
+   entry. (`pricing` is deliberately not wired — it's a sub-block of the experiences section, with no
+   standalone `page_sections` row to carry a `settings.variant`.)
 That's it — the admin Layout dropdown, the ⚙ options form, and the per-item custom-field inputs all
 appear automatically from the manifest. Pick the variant, set options, fill fields, reload.
+
+**Worked sample (faq/cards):** the registry entry + `templates/sections/faq/cards.html` +
+`public/sections/faq/cards.css` are the *entire* diff that added a server-rendered card-grid look to
+the FAQ section — proof that the wiring is fully generic across list sections.
+
+## Custom sections (the bridge)
+
+Admin-created **custom** sections (`section_type != 'built_in'`) work differently from built-ins: they
+render **client-side**, dispatching on `page_sections.template` (`cards_grid`, `text_content`,
+`image_gallery`, …) to a renderer in `public/script.js`, with per-item rows from `custom_section_items`.
+That `template` value **is** the custom section's "variant", and each item already has an `extra_data`
+JSONB for custom fields. They are now bridged into the **one manifest** so they're managed the same way:
+
+- The manifest's reserved **`__custom__`** key (slugs can't contain underscores → no collision) maps
+  each custom template type → `{label, group, data_driven, item_fields}`. It lives in
+  `app._CUSTOM_SECTION_TEMPLATES` — the single source the admin reads.
+- The admin **item editor** and the **"Add Section" dropdown** are now driven by that manifest
+  (`getTemplateFields` / `_populateCustomTemplateSelect`), with the old hardcoded list kept only as a
+  fail-safe fallback.
+- A field marked `{"extra": true}` is stored in `custom_section_items.extra_data` (no migration); the
+  admin form reads/writes `extra_data.<id>`, and a renderer displays it via `item.extra_data.<id>`.
+  Sample: `cards_grid` declares an optional `badge` field → `renderCardsGridTemplate` shows it as a
+  ribbon.
+
+**To add a custom field to a custom template:** add a field (with `"extra": true` for non-column data)
+to that template in `app._CUSTOM_SECTION_TEMPLATES`, then read it in the template's renderer
+(`item.extra_data.<id>`). The admin item form picks it up automatically. **To add a whole new custom
+template type:** add an entry to `_CUSTOM_SECTION_TEMPLATES` **and** a `render<Name>Template` branch in
+`renderCustomSectionHTML` (an unknown template falls back to `cards_grid`, so it degrades safely).
+
+> **Built-in vs custom, in one line:** built-ins can be **server-rendered** (Option B → SEO) via a
+> Jinja partial; custom sections render **client-side** via their `template` renderer. Both are now
+> described by the same manifest and customizable by the web team — the authoring location differs.
 
 ### Reference files
 | Concern | File |

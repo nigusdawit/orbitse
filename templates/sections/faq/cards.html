@@ -1,0 +1,20 @@
+{# templates/sections/faq/cards.html — Option B "cards" variant for the FAQ section. Server-rendered
+   into the <!-- SECTION_INJECT:faq --> placeholder (inside #faq-list) when settings.variant == "cards".
+   Receives:
+     items   = list of FAQ rows ({ id, question, answer })  — the SAME view-model the client uses
+     options = { columns: "1"|"2"|"3", reveal: bool }       — from the ⚙ Layout options drawer
+   Jinja autoescaping is ON, so question/answer are safe by default. The root carries
+   data-ssr-section="faq" so the client's renderFAQ() early-skips and never overwrites this markup.
+   FAIL-SAFE: if this template errors, the server injects "" and the client renders the default
+   accordion instead. This file + the registry entry are the ONLY things needed to add this look —
+   the loader, placeholder, and client-skip are already wired generically for every list section. #}
+<div class="tpl-faq-cards" data-ssr-section="faq"
+     style="--tpl-faq-cols: {{ options.columns or '2' }};">
+  {% for f in items %}
+    <div class="tpl-faq-card{{ ' fade-in-view' if options.reveal else '' }}"
+         data-testid="faq-card-{{ f.id }}">
+      <h3 class="tpl-faq-q">{{ f.question }}</h3>
+      <p class="tpl-faq-a">{{ f.answer }}</p>
+    </div>
+  {% endfor %}
+</div>

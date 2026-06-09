@@ -485,6 +485,8 @@ function renderHighlights() {
 function renderExperiences() {
   const grid = document.getElementById('experiences-grid');
   if (!grid || !experiences.length) return;
+  // Option B: a server-rendered layout variant already populated this container — don't overwrite it.
+  if (grid.querySelector('[data-ssr-section]')) return;
 
   /* Each experience card gets aria-label with the experience name
      so screen readers can announce it meaningfully */
@@ -651,6 +653,8 @@ else runSectionTemplateInit();
 function renderTestimonials() {
   const grid = document.getElementById('testimonials-grid');
   if (!grid || !testimonials.length) return;
+  // Option B: a server-rendered layout variant already populated this container — don't overwrite it.
+  if (grid.querySelector('[data-ssr-section]')) return;
   grid.setAttribute('data-tpl', getSectionVariant('testimonials'));   // CSS hook for per-variant container styling
   grid.innerHTML = renderSectionTemplate('testimonials', testimonials);
 }
@@ -694,6 +698,8 @@ function renderTeam() {
 function renderFAQ() {
   const list = document.getElementById('faq-list');
   if (!list || !faqItems.length) return;
+  // Option B: a server-rendered layout variant already populated this container — don't overwrite it.
+  if (list.querySelector('[data-ssr-section]')) return;
 
   /* FAQ items use role="button" with aria-expanded on the question toggle,
      and role="region" with aria-labelledby on the answer panel so screen
@@ -745,6 +751,8 @@ function toggleFAQ(button) {
 function renderBlogSection() {
   const grid = document.getElementById('blog-grid');
   if (!grid || !blogPosts.length) return;
+  // Option B: a server-rendered layout variant already populated this container — don't overwrite it.
+  if (grid.querySelector('[data-ssr-section]')) return;
 
   /* Each blog card gets role="article" and aria-label with the post title
      so screen readers can announce each blog preview meaningfully */
@@ -822,6 +830,8 @@ function formatEventPriceLabel(ev) {
 function renderEventsSection() {
   const grid = document.getElementById('events-grid');
   if (!grid) return;
+  // Option B: a server-rendered layout variant already populated this container — don't overwrite it.
+  if (grid.querySelector('[data-ssr-section]')) return;
   if (!upcomingEvents.length) { grid.innerHTML = ''; return; }
 
   grid.innerHTML = upcomingEvents.map((ev, index) => {
@@ -2834,17 +2844,26 @@ function renderCustomSectionHTML(section, items) {
 function renderCardsGridTemplate(items, sectionId, sectionTitle) {
   if (!items.length) return '<p class="section-subtitle" style="text-align:center;">No items yet.</p>';
   return `<div class="custom-cards-grid" data-testid="grid-custom-${sectionId}">
-    ${items.map((item, i) => `
+    ${items.map((item, i) => {
+      // extra_data carries registry-declared custom fields (e.g. an optional "badge" ribbon). The
+      // public items API returns JSONB as an object; guard defensively in case it's absent/malformed.
+      const ex = (item.extra_data && typeof item.extra_data === 'object') ? item.extra_data : {};
+      const badge = ex.badge
+        ? `<span class="custom-card-badge" style="display:inline-block;margin-bottom:.5rem;padding:.15rem .6rem;border-radius:999px;background:var(--accent-color,#c9a24a);color:#111;font-size:.72rem;font-weight:700;letter-spacing:.02em;">${escapeHtml(ex.badge)}</span>`
+        : '';
+      return `
       <div class="custom-card fade-in-view stagger-${(i % 6) + 1}" ${applyAccessibility(sectionTitle || '', item.title || '', 'cards_grid')} data-testid="card-custom-${item.id}">
         ${item.image_url ? `<div class="custom-card-img" style="background-image: url(${item.image_url})"></div>` : ''}
         <div class="custom-card-body">
+          ${badge}
           <h3 class="custom-card-title">${escapeHtml(item.title || '')}</h3>
           ${item.subtitle ? `<p class="custom-card-subtitle">${escapeHtml(item.subtitle)}</p>` : ''}
           ${item.content ? `<p class="custom-card-content">${escapeHtml(item.content)}</p>` : ''}
           ${item.link_url ? `<a href="${item.link_url}" class="custom-card-link" data-testid="link-custom-${item.id}">${escapeHtml(item.link_text || 'Learn More')}</a>` : ''}
         </div>
       </div>
-    `).join('')}
+      `;
+    }).join('')}
   </div>`;
 }
 
@@ -10604,6 +10623,8 @@ function syncSplitToChat() {
     const grid = document.getElementById('services-grid');
     const section = document.getElementById('section-services');
     if(!grid || !section) return;
+    // Option B: a server-rendered layout variant already populated this container — don't overwrite it.
+    if(grid.querySelector('[data-ssr-section]')) return;
     const active = (services||[]).filter(s=>s.is_active);
     /* Visibility is owned by Page Layout (applySectionOrder). We only
        paint the grid here; if there are no active services AND the

@@ -1,0 +1,24 @@
+/* public/sections/faq/cards.css — scoped styles for the FAQ "cards" variant (Option B). The server
+   auto-injects this <link> ONLY when this variant is active (it checks os.path.exists). Everything is
+   namespaced under .tpl-faq-* so it never collides with the rest of the site. The column count comes
+   from the --tpl-faq-cols custom property the partial sets from the variant's `columns` option. */
+.tpl-faq-cards {
+  display: grid;
+  grid-column: 1 / -1;   /* span full width even if the parent (#faq-list) is itself a grid/flex */
+  grid-template-columns: repeat(var(--tpl-faq-cols, 2), minmax(0, 1fr));
+  gap: var(--space-md, 1rem);
+  width: 100%;
+  max-width: 60rem;
+  margin: 0 auto;
+}
+@media (max-width: 760px) { .tpl-faq-cards { grid-template-columns: 1fr; } }
+
+.tpl-faq-card {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 14px;
+  padding: var(--space-md, 1rem) var(--space-lg, 1.5rem);
+  text-align: left;
+}
+.tpl-faq-q { margin: 0 0 0.4rem; font-size: 1.05rem; line-height: 1.35; }
+.tpl-faq-a { margin: 0; opacity: 0.85; line-height: 1.6; font-size: 0.95rem; }
