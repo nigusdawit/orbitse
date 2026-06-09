@@ -27,6 +27,14 @@
         <div class="gx-stat-value" id="stat-unique-visitors">0</div></div>
     </div>
 
+    <!-- Channel filter chips — All / Chat / SMS / Voice (counts filled by loadChatHistory). -->
+    <div class="gxi-filters" id="inbox-filters">
+      <button type="button" class="gxi-filter active" data-ch="" onclick="inboxSetChannel('', this)" data-testid="inbox-filter-all">All</button>
+      <button type="button" class="gxi-filter" data-ch="chat" onclick="inboxSetChannel('chat', this)" data-testid="inbox-filter-chat">💬 Chat <span class="gxi-filter-n" id="cnt-chat"></span></button>
+      <button type="button" class="gxi-filter" data-ch="sms" onclick="inboxSetChannel('sms', this)" data-testid="inbox-filter-sms">📱 SMS <span class="gxi-filter-n" id="cnt-sms"></span></button>
+      <button type="button" class="gxi-filter" data-ch="voice" onclick="inboxSetChannel('voice', this)" data-testid="inbox-filter-voice">📞 Voice <span class="gxi-filter-n" id="cnt-voice"></span></button>
+    </div>
+
     <div class="gxi-inbox">
       <!-- Pane 1: thread list (collapsible) -->
       <div class="gxi-threads" id="inbox-thread-list" data-testid="inbox-thread-list">
@@ -38,6 +46,7 @@
         <div class="gxi-transcript-head">
           <button class="gxi-rail-btn" id="inbox-toggle-threads" type="button" aria-pressed="false" onclick="inboxToggleThreads()" title="Show or hide the conversation list" aria-label="Toggle conversation list">☰</button>
           <span class="gxi-transcript-title" id="inbox-transcript-head"></span>
+          <a class="gxi-rec-link" id="inbox-recording" target="_blank" rel="noopener" style="display:none;">▶ Recording</a>
           <button class="gxi-rail-btn gxi-rail-btn-right" id="inbox-toggle-context" type="button" aria-pressed="false" onclick="inboxToggleContext()" title="Show or hide visitor details" aria-label="Toggle visitor details">ⓘ</button>
         </div>
         <div class="gxi-msgs" id="inbox-transcript" data-testid="inbox-transcript">
@@ -134,6 +143,20 @@
         background:var(--admin-surface-hover); color:var(--admin-text); }
       #tab-chat-history .gxi-ctx-row{ font-size:.82rem; color:var(--admin-text); margin:.15rem 0; }
       #tab-chat-history .gxi-ctx-muted{ color:var(--admin-text-muted); font-size:.8rem; }
+      /* Unified-inbox additions: channel filter chips, per-thread channel icon, recording link. */
+      #tab-chat-history .gxi-filters{ display:flex; gap:.4rem; flex-wrap:wrap; margin:.2rem 0 .1rem; }
+      #tab-chat-history .gxi-filter{ font:inherit; font-size:.78rem; cursor:pointer; padding:.25rem .7rem;
+        border-radius:999px; border:1px solid var(--admin-border); background:var(--admin-surface); color:var(--admin-text); }
+      #tab-chat-history .gxi-filter:hover{ background:var(--admin-surface-hover); }
+      #tab-chat-history .gxi-filter.active{ background:color-mix(in srgb,var(--admin-accent) 18%,transparent);
+        border-color:var(--admin-accent); font-weight:600; }
+      #tab-chat-history .gxi-filter-n{ font-size:.7rem; color:var(--admin-text-muted); }
+      #tab-chat-history .gxi-th-ch{ flex:none; font-size:.8rem; }
+      #tab-chat-history .gxi-rec-link{ flex:none; font-size:.72rem; color:var(--admin-accent); text-decoration:none;
+        padding:.1rem .4rem; border:1px solid var(--admin-border); border-radius:7px; }
+      #tab-chat-history .gxi-rec-link:hover{ background:var(--admin-surface-hover); }
+      #tab-chat-history .gxi-composer.gxi-composer-readonly textarea{ opacity:.5; }
+      #tab-chat-history .gxi-composer-hint{ font-size:.74rem; color:var(--admin-text-muted); margin-right:auto; align-self:center; }
       @media (max-width:900px){ #tab-chat-history .gxi-inbox{ grid-template-columns:1fr; height:auto; }
         #tab-chat-history .gxi-threads, #tab-chat-history .gxi-context{ border:0; border-bottom:1px solid var(--admin-border); max-height:240px; } }
     </style>

@@ -2310,9 +2310,20 @@
       } catch (_) { /* fail-open: leave the badge as-is */ }
     }
 
+    let _inboxChannel = '';   // active channel filter for the unified inbox ('' = all | chat | sms | voice)
+    let _inboxActiveChannel = 'chat';   // channel of the currently-open conversation (drives composer routing)
+
+    function inboxSetChannel(ch, btn) {
+      _inboxChannel = ch || '';
+      document.querySelectorAll('#inbox-filters .gxi-filter').forEach(b => b.classList.remove('active'));
+      if (btn) btn.classList.add('active');
+      loadChatHistory();
+    }
+
     async function loadChatHistory() {
       try {
-        const res = await fetch('/admin/api/chat-history', { credentials: 'same-origin' });
+        const qs = _inboxChannel ? ('?channel=' + encodeURIComponent(_inboxChannel)) : '';
+        const res = await fetch('/admin/api/chat-history' + qs, { credentials: 'same-origin' });
         const data = await res.json();
 
         const stats = data.stats || {};
@@ -2320,6 +2331,9 @@
         document.getElementById('stat-messages-today').textContent = stats.messages_today || 0;
         document.getElementById('stat-avg-messages').textContent = stats.avg_messages || 0;
         document.getElementById('stat-unique-visitors').textContent = stats.unique_visitors || 0;
+        // channel filter-chip counts
+        const setCnt = (id, n) => { const e = document.getElementById(id); if (e) e.textContent = (n != null ? '(' + n + ')' : ''); };
+        setCnt('cnt-chat', stats.count_chat); setCnt('cnt-sms', stats.count_sms); setCnt('cnt-voice', stats.count_voice);
 
         const list = document.getElementById('inbox-thread-list');
         if (!list) return;
@@ -2336,9 +2350,12 @@
         // visitor's, recently) so an operator can see who is waiting on a reply.
         const now = Date.now();
         list.innerHTML = convs.map(c => {
+          const ch = c.channel || 'chat';
+          const chIcon = ch === 'sms' ? '📱' : (ch === 'voice' ? '📞' : '💬');
           const vid = c.visitor_id || '';
-          // Persistent visitor_id (localStorage on the visitor) → short label; hover = full id.
-          const label = vid ? esc(vid.replace('cv_', '').substring(0, 14)) : '—';
+          // SMS/voice threads show the phone number (contact); chat shows the visitor id.
+          const who = (ch === 'sms' || ch === 'voice') ? (c.contact || vid || '—')
+            : (vid ? vid.replace('cv_', '').substring(0, 14) : '—');
           const when = c.last_message_at || c.started_at;
           const t = when ? new Date(when).toLocaleString() : '';
           const recent = when ? (now - new Date(when).getTime()) < 10 * 60 * 1000 : false;
@@ -2346,7 +2363,7 @@
             ? '<span class="gxi-dot" title="Last message from visitor — awaiting reply"></span>' : '';
           const pausedChip = c.ai_paused ? '<span class="gxi-chip" title="AI auto-reply is paused">AI paused</span>' : '';
           return `<button type="button" class="gxi-thread" data-conv="${c.id}" onclick="openConversation(${c.id})" data-testid="thread-${c.id}">
-            <div class="gxi-th-top">${liveDot}<span class="gxi-th-vid" title="${_attrEsc(vid)}">${label}</span>${pausedChip}<span class="gxi-th-time">${esc(t)}</span></div>
+            <div class="gxi-th-top">${liveDot}<span class="gxi-th-ch" title="${_attrEsc(ch)}">${chIcon}</span><span class="gxi-th-vid" title="${_attrEsc(who)}">${esc(who)}</span>${pausedChip}<span class="gxi-th-time">${esc(t)}</span></div>
             <div class="gxi-th-msg">${esc((c.first_message || '').substring(0, 70))}</div>
           </button>`;
         }).join('');
@@ -2425,9 +2442,20 @@
         const data = await res.json();
         if (_inboxActiveConv !== convId) return;   // a newer conversation was opened mid-fetch — drop stale paint
         const conv = data.conversation || {};
+        _inboxActiveChannel = conv.channel || 'chat';
         if (headEl) {
-          headEl.textContent = (conv.started_at ? new Date(conv.started_at).toLocaleString() : 'Conversation')
-            + ' · ' + (conv.device_type || 'desktop');
+          const ch = conv.channel || 'chat';
+          let h = (conv.started_at ? new Date(conv.started_at).toLocaleString() : 'Conversation');
+          h += ' · ' + (ch === 'sms' ? '📱 SMS' : ch === 'voice' ? '📞 Voice' : ('💬 ' + (conv.device_type || 'desktop')));
+          if (conv.contact) h += ' · ' + conv.contact;
+          headEl.textContent = h;
+        }
+        // recording link (voice calls only) — href set via property, validated http(s)
+        const recEl = document.getElementById('inbox-recording');
+        if (recEl) {
+          const url = conv.recording_url || '';
+          if (url && /^https?:\/\//i.test(url)) { recEl.href = url; recEl.style.display = ''; }
+          else { recEl.removeAttribute('href'); recEl.style.display = 'none'; }
         }
         const msgs = data.messages || [];
         if (tEl) {
@@ -2504,11 +2532,36 @@
     function _inboxSyncComposer() {
       const composer = document.getElementById('inbox-composer');
       const pauseBtn = document.getElementById('inbox-pause-btn');
+      const sendBtn = document.getElementById('inbox-send-btn');
+      const ta = document.getElementById('inbox-compose-text');
       if (composer) composer.style.display = (_inboxActiveConv != null) ? '' : 'none';
-      if (pauseBtn) {
-        const conv = _inboxConvs.find(c => c.id === _inboxActiveConv);
-        const paused = !!(conv && conv.ai_paused);
-        pauseBtn.textContent = paused ? 'Resume AI' : 'Pause AI';
+      if (_inboxActiveConv == null) return;
+      const ch = _inboxActiveChannel || 'chat';
+      const oldHint = composer && composer.querySelector('.gxi-composer-hint');
+      if (oldHint) oldHint.remove();
+      if (ch === 'voice') {
+        // Voice transcripts are read-only — you can't text-reply to a finished call.
+        if (composer) composer.classList.add('gxi-composer-readonly');
+        if (ta) { ta.disabled = true; ta.placeholder = 'Phone call — reply by calling back.'; }
+        if (sendBtn) sendBtn.style.display = 'none';
+        if (pauseBtn) pauseBtn.style.display = 'none';
+        return;
+      }
+      if (composer) composer.classList.remove('gxi-composer-readonly');
+      if (ta) ta.disabled = false;
+      if (sendBtn) { sendBtn.style.display = ''; sendBtn.textContent = (ch === 'sms') ? 'Send SMS' : 'Send as human'; }
+      if (ch === 'sms') {
+        // No AI auto-answers SMS, so there's nothing to pause; the reply goes out as a text.
+        if (ta) ta.placeholder = 'Reply by SMS…';
+        if (pauseBtn) pauseBtn.style.display = 'none';
+      } else {
+        if (ta) ta.placeholder = 'Reply as a human…';
+        if (pauseBtn) {
+          pauseBtn.style.display = '';
+          const conv = _inboxConvs.find(c => c.id === _inboxActiveConv);
+          const paused = !!(conv && conv.ai_paused);
+          pauseBtn.textContent = paused ? 'Resume AI' : 'Pause AI';
+        }
       }
     }
 

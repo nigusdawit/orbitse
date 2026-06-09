@@ -42512,7 +42512,8 @@ def webhook_twilio_inbound():
     if not messaging.verify_twilio_signature(request.url, form, sig):
         return Response("<Response/>", status=401, mimetype="application/xml")
     from_num = (form.get("From") or "").strip()
-    body_text = (form.get("Body") or "").strip().lower()
+    body_orig = (form.get("Body") or "").strip()
+    body_text = body_orig.lower()
     keywords = {"stop", "stopall", "unsubscribe", "cancel", "end", "quit"}
     if from_num and body_text in keywords:
         execute_db(
@@ -42524,6 +42525,16 @@ def webhook_twilio_inbound():
             """,
             (from_num,),
         )
+    elif from_num and body_orig:
+        # Two-way SMS → thread it into the unified Conversations inbox (channel='sms', one thread
+        # per number). Fail-safe: ingestion must never break the webhook (we always return 200 TwiML).
+        try:
+            from core import inbox_get_or_create_conversation, inbox_append_message
+            cid, _created = inbox_get_or_create_conversation(
+                "sms:" + from_num, channel="sms", contact=from_num, visitor_id=from_num)
+            inbox_append_message(cid, "user", body_orig)
+        except Exception as _e:
+            capture_exc(_e, "sms_inbound_ingest")
     # Twilio expects TwiML in the response. Empty <Response/> = no auto-reply.
     return Response("<Response/>", mimetype="application/xml")
 

@@ -699,6 +699,52 @@ def _log_cost(tid, vid, assistant_id, duration, cost):
         print(f"[vapi] cost log failed: {e}")
 
 
+def _parse_vapi_transcript(transcript):
+    """Best-effort split of Vapi's transcript string into (role, text) turns. Vapi formats lines as
+    'User: ...' / 'AI: ...'. Returns [] if it isn't cleanly structured (caller stores one blob)."""
+    if not transcript or not isinstance(transcript, str):
+        return []
+    turns = []
+    for line in transcript.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        low = line.lower()
+        if low.startswith("user:"):
+            turns.append(("user", line.split(":", 1)[1].strip()))
+        elif low.startswith("ai:") or low.startswith("bot:") or low.startswith("assistant:"):
+            turns.append(("assistant", line.split(":", 1)[1].strip()))
+        else:
+            return []   # not a clean turn structure → bail to the single-blob fallback
+    return turns
+
+
+def _ingest_voice_conversation(vid, contact, transcript, recording, summary):
+    """Mirror a completed Vapi call into the unified inbox as a channel='voice' conversation, keyed
+    by the call id so webhook retries never duplicate it. Transcript → messages; summary as a note.
+    Fail-safe (never raises into the webhook)."""
+    try:
+        from core import inbox_get_or_create_conversation, inbox_append_message
+    except Exception:
+        return
+    cid, created = inbox_get_or_create_conversation(
+        "vapi:" + str(vid), channel="voice", contact=(contact or ""),
+        visitor_id=(contact or ""), recording_url=(recording or ""))
+    if not (cid and created):
+        return   # already ingested (a retry) → don't re-append the transcript
+    if summary:
+        inbox_append_message(cid, "assistant", "📋 Call summary: " + str(summary))
+    turns = _parse_vapi_transcript(transcript)
+    if turns:
+        for role, text in turns:
+            if text:
+                inbox_append_message(cid, role, text)
+    elif transcript:
+        inbox_append_message(cid, "assistant", str(transcript))
+    elif not summary:
+        inbox_append_message(cid, "assistant", "(Call completed — no transcript available.)")
+
+
 def _vapi_handle_tool_call(msg, call_id):
     """Run a Vapi tool/function call against the concierge's tools and return Vapi's expected
     result shape. Routes to the SAME executor the website chat uses (execute_chat_tool), so
@@ -787,6 +833,11 @@ def vapi_webhook():
                          ended_reason=ended, duration=dur, cost=cost, transcript=transcript,
                          recording=recording, summary=summary)
             _log_cost(tid, vid, assistant_id, dur, cost)
+            # Mirror the call into the unified Conversations inbox (channel='voice').
+            try:
+                _ingest_voice_conversation(vid, cust or phone, transcript, recording, summary)
+            except Exception as e:
+                capture_exc(e, "vapi.inbox_ingest")
         elif mtype in ("status-update", "call.started", "call.ended"):
             status = msg.get("status") or call.get("status") or "in-progress"
             _upsert_call(tid, vid, assistant_id, cust, phone, direction, status=status)

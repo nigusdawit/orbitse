@@ -36,15 +36,19 @@ reporting_bp = Blueprint("reporting", __name__)
 @reporting_bp.route("/admin/api/chat-history", methods=["GET"])
 @admin_required
 def admin_chat_history():
-    """GET /admin/api/chat-history — List conversations with stats."""
+    """GET /admin/api/chat-history — List conversations with stats. Optional ?channel=chat|sms|voice."""
     page = int(request.args.get("page", 1))
     per_page = int(request.args.get("per_page", 50))
     offset = (page - 1) * per_page
+    channel = (request.args.get("channel") or "").strip().lower()
+    where, pre = "", []
+    if channel in ("chat", "sms", "voice"):
+        where = "WHERE c.channel = %s"
+        pre = [channel]
 
-    # 095 §2.4 — additive columns for the inbox: ai_paused (LEFT JOIN the takeover
-    # table, which the bootstrap guarantees exists), plus last-message time/role to
-    # drive live/unread markers. Existing keys (c.*, message_count, first_message)
-    # are unchanged, so the legacy table renderer keeps working.
+    # 095 §2.4 + unified inbox — additive columns: ai_paused (LEFT JOIN the takeover table), last
+    # message time/role for live markers, and (via c.*) the channel/contact/recording_url tags so the
+    # one inbox lists chat + SMS + voice. Existing keys are unchanged, so the legacy renderer works.
     conversations = query_db("""
         SELECT c.*,
             c.visitor_id,
@@ -55,21 +59,21 @@ def admin_chat_history():
             (SELECT role FROM chat_messages WHERE conversation_id = c.id ORDER BY id DESC LIMIT 1) as last_role
         FROM chat_conversations c
         LEFT JOIN conversation_takeover t ON t.conversation_id = c.id
+        """ + where + """
         ORDER BY c.updated_at DESC
         LIMIT %s OFFSET %s
-    """, (per_page, offset))
+    """, tuple(pre + [per_page, offset]))
 
-    # Chat analytics stats:
-    # - total_conversations: one per page load (each refresh = new conversation)
-    # - messages_today: all messages sent today across all conversations
-    # - avg_messages: average messages per conversation
-    # - unique_visitors: distinct visitor_ids (tracks returning visitors across sessions)
+    # Chat analytics stats + a per-channel breakdown (drives the inbox filter chip counts).
     stats = query_db("""
         SELECT
             (SELECT COUNT(*) FROM chat_conversations) as total_conversations,
             (SELECT COUNT(*) FROM chat_messages WHERE created_at >= CURRENT_DATE) as messages_today,
             (SELECT ROUND(AVG(cnt), 1) FROM (SELECT COUNT(*) as cnt FROM chat_messages GROUP BY conversation_id) sub) as avg_messages,
-            (SELECT COUNT(DISTINCT visitor_id) FROM chat_conversations WHERE visitor_id != '' AND visitor_id IS NOT NULL) as unique_visitors
+            (SELECT COUNT(DISTINCT visitor_id) FROM chat_conversations WHERE visitor_id != '' AND visitor_id IS NOT NULL) as unique_visitors,
+            (SELECT COUNT(*) FROM chat_conversations WHERE channel = 'chat') as count_chat,
+            (SELECT COUNT(*) FROM chat_conversations WHERE channel = 'sms') as count_sms,
+            (SELECT COUNT(*) FROM chat_conversations WHERE channel = 'voice') as count_voice
     """, fetchone=True)
 
     return jsonify({"conversations": conversations or [], "stats": stats or {}})
@@ -227,7 +231,7 @@ def admin_conversation_message(conv_id):
     way OUT to the visitor — the public widget renders agent_human messages as
     TEXT (textContent), never HTML, so an operator can't inject script into a
     visitor's page. We also bound the length."""
-    conv = query_db("SELECT id FROM chat_conversations WHERE id=%s", (conv_id,), fetchone=True)
+    conv = query_db("SELECT id, channel, contact FROM chat_conversations WHERE id=%s", (conv_id,), fetchone=True)
     if not conv:
         return jsonify({"error": "Conversation not found"}), 404
     data = request.get_json(silent=True) or {}
@@ -235,6 +239,36 @@ def admin_conversation_message(conv_id):
     if not content:
         return jsonify({"error": "empty"}), 400
     content = content[:8000]   # bound — chat_messages.content is TEXT but keep it sane
+    channel = (conv.get("channel") or "chat") if isinstance(conv, dict) else "chat"
+
+    # Voice transcripts are read-only — you can't text-reply to a finished phone call.
+    if channel == "voice":
+        return jsonify({"error": "no_text_reply",
+                        "message": "This is a phone-call transcript — use a call-back to reach them."}), 400
+
+    # SMS: the operator's reply goes back OUT over SMS (not the visitor poll lane). No AI takeover —
+    # nothing is auto-answering SMS to pause.
+    if channel == "sms":
+        contact = (conv.get("contact") or "").strip()
+        if not contact:
+            return jsonify({"error": "no_contact", "message": "No phone number on this thread."}), 400
+        try:
+            import messaging
+            messaging.send_sms(contact, content)
+        except Exception as e:
+            capture_exc(e, "admin_conversation_message.sms")
+            return jsonify({"error": "send_failed", "message": "Couldn't send the SMS."}), 502
+        try:
+            row = execute_db(
+                "INSERT INTO chat_messages (conversation_id, role, content) "
+                "VALUES (%s, 'agent_human', %s) RETURNING id", (conv_id, content))
+            execute_db("UPDATE chat_conversations SET updated_at = NOW() WHERE id = %s", (conv_id,))
+        except Exception as e:
+            capture_exc(e, "admin_conversation_message.sms_log")
+            row = None
+        return jsonify({"ok": True, "id": (row.get("id") if isinstance(row, dict) else None), "channel": "sms"})
+
+    # chat (default): human takeover + deliver via the public agent-messages poll lane.
     try:
         # Sending implies takeover: pause the AI so it won't also answer this turn.
         _takeover_upsert(conv_id, True, session.get("admin_role", "admin"))

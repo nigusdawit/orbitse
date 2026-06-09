@@ -3201,6 +3201,52 @@ def compute_today_spend(tenant_id=None):
     return out
 
 
+# --- unified inbox ingestion (chat + SMS + voice share chat_conversations) -----------------------
+# SMS (inbound Twilio) and voice (Vapi end-of-call) are mirrored into chat_conversations/chat_messages
+# so the one Conversations inbox lists all channels. Each conversation carries a `channel` tag
+# (migration 0047). These helpers are find-or-create + append, keyed by a stable session_id
+# ('sms:<phone>' threads a number's texts; 'vapi:<call_id>' is one row per call). Both are FAIL-SAFE
+# (return None / no-op on error) — ingestion must never break an inbound webhook.
+
+def inbox_get_or_create_conversation(session_id, *, channel="chat", contact="",
+                                     visitor_id="", recording_url=""):
+    """Find (by session_id) or create a chat_conversations row. Returns (conversation_id, created)."""
+    try:
+        sid = str(session_id or "")[:100]
+        if not sid:
+            return None, False
+        conv = query_db("SELECT id FROM chat_conversations WHERE session_id=%s", (sid,), fetchone=True)
+        if isinstance(conv, dict):
+            cid = conv["id"]
+            if recording_url:
+                execute_db("UPDATE chat_conversations SET updated_at=NOW(), recording_url=%s WHERE id=%s",
+                           (str(recording_url)[:500], cid))
+            else:
+                execute_db("UPDATE chat_conversations SET updated_at=NOW() WHERE id=%s", (cid,))
+            return cid, False
+        row = execute_db(
+            "INSERT INTO chat_conversations (session_id, visitor_id, channel, contact, recording_url) "
+            "VALUES (%s,%s,%s,%s,%s) RETURNING id",
+            (sid, str(visitor_id or contact or "")[:100], channel,
+             str(contact or "")[:120], str(recording_url or "")[:500]))
+        return (row["id"] if isinstance(row, dict) else None), True
+    except Exception as e:
+        capture_exc(e, "inbox_get_or_create_conversation")
+        return None, False
+
+
+def inbox_append_message(conversation_id, role, content):
+    """Append a chat_messages row + bump the conversation's updated_at. Fail-safe no-op on error."""
+    if not conversation_id or not content:
+        return
+    try:
+        execute_db("INSERT INTO chat_messages (conversation_id, role, content) VALUES (%s,%s,%s)",
+                   (conversation_id, role, str(content)[:8000]))
+        execute_db("UPDATE chat_conversations SET updated_at=NOW() WHERE id=%s", (conversation_id,))
+    except Exception as e:
+        capture_exc(e, "inbox_append_message")
+
+
 def get_tenant_cost_cap(tenant_id=None):
     """Read the tenant_cost_caps row, returning a dict with sane defaults
     if no row exists yet (e.g. fresh tenant before init_db re-runs)."""
