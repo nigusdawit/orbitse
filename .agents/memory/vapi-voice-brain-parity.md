@@ -34,6 +34,17 @@ they require tools DEFINED ON THE VAPI ASSISTANT pointing at `/webhooks/vapi`
 the model (it currently passes `[]`). Knowledge parity and action parity are two
 independent fixes.
 
+**Caching contract:** the voice prompt builder returns a `(stable_prefix,
+volatile_suffix)` pair so prompt caching can re-use the static block. Stable =
+base + site identity + site index + brand voice + scope/safety/escalation + voice
+note (identical across turns AND calls). Volatile = per-turn RAG + per-call CALL
+CONTEXT — these MUST stay out of the prefix or they bust the cache every turn.
+Pass to Claude as a LIST `[prefix, suffix]` (cache_control lands on part 0 only);
+to OpenAI as two ordered system messages (stable first) for automatic prefix
+caching. **Why:** a single concatenated string with volatile RAG embedded gives a
+cache MISS every turn on Claude. Caching only fires when the `prompt_cache_enabled`
+AI-Control knob is on (Anthropic); OpenAI auto-caches regardless.
+
 **Wrong assistant trap:** only a Vapi assistant whose `model.provider=custom-llm`
 + `url=<host>/api/vapi/llm` uses the app brain. "Managed" assistants
 (provider=openai/anthropic) run their own dashboard-typed prompt with zero app
