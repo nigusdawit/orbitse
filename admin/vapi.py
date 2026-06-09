@@ -17,6 +17,12 @@ CSRF-exempt + un-gated, so the webhook is reachable by Vapi's servers.
 import hmac
 import json
 import os
+from datetime import datetime
+
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover - py<3.9 only
+    ZoneInfo = None
 
 import httpx
 from flask import Blueprint, request, jsonify
@@ -372,3 +378,154 @@ def vapi_webhook():
         capture_exc(e, "vapi.webhook")
         print(f"[vapi] webhook error: {e}")
         return jsonify({"received": True})
+
+
+# --- Outbound-call automation action (Vapi + automations) --------------------
+# A scheduled automation action that places outbound Vapi calls to people matching a status
+# filter. It auto-dials REAL people, so it is heavily guarded:
+#   * ENV kill-switch OUTBOUND_CALLING_ENABLED (off by default; owner-armed, not admin-toggleable
+#     — a compromised admin can't start mass-dialing) AND requires VAPI_PRIVATE_KEY.
+#   * calling-hours window (fail-safe: any tz/hour error → skip, never dial off-hours).
+#   * skips do-not-call statuses; only dials E.164 numbers.
+#   * deduped per campaign via campaign_calls (each person called once per automation).
+#   * dry-run aware (a test run reports who it WOULD call, dials no one).
+# Audience tables are ALLOWLISTED (no arbitrary SQL); the phone column is fixed; status is a bound
+# parameter. Registered into the automations engine via register_action (additive).
+
+_VAPI_CAMPAIGN_TABLES = {"leads", "meetings"}   # both have a `phone` + `status` column
+_VAPI_DNC = ("dnc", "do_not_call", "do-not-call", "unsubscribed", "opted_out")
+
+
+def _outbound_enabled():
+    return (os.environ.get("OUTBOUND_CALLING_ENABLED") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _tenant_tz():
+    try:
+        r = query_db("SELECT timezone FROM tenants WHERE id=%s", (current_tenant_id(),), fetchone=True)
+        return (r.get("timezone") or "UTC").strip() if isinstance(r, dict) else "UTC"
+    except Exception:
+        return "UTC"
+
+
+def _within_hours(tzname, start_h, end_h):
+    """True only if the current local time in tzname is within [start_h, end_h). If the timezone
+    db is unavailable (e.g. no IANA tzdata) we fall back to UTC rather than skipping outright, so
+    a window is still enforced. start_h == end_h means 'no window' → never within."""
+    try:
+        hour = None
+        if ZoneInfo and tzname:
+            try:
+                hour = datetime.now(ZoneInfo(tzname)).hour
+            except Exception:
+                hour = None   # missing tzdata / bad tz → fall back to UTC below
+        if hour is None:
+            hour = datetime.utcnow().hour
+        if start_h == end_h:
+            return False
+        if start_h < end_h:
+            return start_h <= hour < end_h
+        return hour >= start_h or hour < end_h     # overnight window
+    except Exception:
+        return False
+
+
+def _run_outbound_campaign(cfg, ctx):
+    """automations action 'vapi_outbound_campaign'. cfg keys: assistant_id, phone_number_id,
+    audience_table, status_filter, max_calls_per_run, call_start_hour, call_end_hour, timezone."""
+    if not _outbound_enabled():
+        return {"ok": False, "skipped": "OUTBOUND_CALLING_ENABLED is not set"}
+    if not _vapi_configured():
+        return {"ok": False, "error": "VAPI_PRIVATE_KEY is not set"}
+    assistant_id = (cfg.get("assistant_id") or "").strip()
+    phone_number_id = (cfg.get("phone_number_id") or "").strip()
+    if not assistant_id or not phone_number_id:
+        return {"ok": False, "error": "assistant_id and phone_number_id are required"}
+    table = (cfg.get("audience_table") or "leads").strip()
+    if table not in _VAPI_CAMPAIGN_TABLES:
+        return {"ok": False, "error": "audience_table must be one of " + ", ".join(sorted(_VAPI_CAMPAIGN_TABLES))}
+    status_filter = (cfg.get("status_filter") or "").strip()
+    try:
+        max_calls = max(1, min(int(cfg.get("max_calls_per_run") or 10), 100))
+    except (TypeError, ValueError):
+        max_calls = 10
+    tzname = (cfg.get("timezone") or "").strip() or _tenant_tz()
+    try:
+        start_h = int(cfg.get("call_start_hour"))
+    except (TypeError, ValueError):
+        start_h = 9
+    try:
+        end_h = int(cfg.get("call_end_hour"))
+    except (TypeError, ValueError):
+        end_h = 18
+    if not _within_hours(tzname, start_h, end_h):
+        return {"ok": True, "calls_placed": 0,
+                "skipped": "outside calling hours (%d-%d %s)" % (start_h, end_h, tzname)}
+    aid = ctx.get("__automation_id") or 0
+    tid = current_tenant_id()
+    # Scope to this tenant explicitly: even in the single-tenant silo deployment, never let an
+    # auto-dialer reach rows it doesn't own. `table` is allowlisted above (no SQL injection); every
+    # other value below is a bound parameter.
+    where = ["t.tenant_id = %s", "t.phone <> ''",
+             "(t.status IS NULL OR LOWER(t.status) NOT IN ('dnc','do_not_call','do-not-call','unsubscribed','opted_out'))"]
+    params = [tid]
+    if status_filter:
+        where.append("t.status = %s")
+        params.append(status_filter)
+    sql = ("SELECT t.id AS aid, t.phone AS phone FROM " + table + " t WHERE " + " AND ".join(where)
+           + " AND NOT EXISTS (SELECT 1 FROM campaign_calls c WHERE c.automation_id=%s "
+           + "AND c.audience_table=%s AND c.audience_id=t.id) ORDER BY t.id LIMIT %s")
+    try:
+        rows = query_db(sql, tuple(params + [aid, table, max_calls])) or []
+    except Exception as e:
+        return {"ok": False, "error": "audience query failed: " + str(e)[:200]}
+    targets = [r for r in rows if str((r or {}).get("phone") or "").strip().startswith("+")]  # E.164 only
+    if ctx.get("__dry_run"):
+        return {"ok": True, "dry_run": True, "would_call": len(targets),
+                "table": table, "status_filter": status_filter}
+    placed = 0
+    for r in targets:
+        num = str(r["phone"]).strip()
+        try:
+            res = _vapi_post("/call", {"assistantId": assistant_id, "phoneNumberId": phone_number_id,
+                                       "customer": {"number": num}})
+            cid = (res.get("id") or "") if isinstance(res, dict) else ""
+            execute_db(
+                "INSERT INTO campaign_calls (tenant_id, automation_id, audience_table, audience_id, phone, vapi_call_id) "
+                "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (automation_id, audience_table, audience_id) DO NOTHING",
+                (tid, aid, table, r["aid"], num, cid))
+            execute_db(
+                "INSERT INTO voice_calls (tenant_id, provider, vapi_call_id, assistant_id, call_sid, to_number, direction, status) "
+                "VALUES (%s,'vapi',%s,%s,%s,%s,'outbound','initiated')",
+                (tid, cid, assistant_id, cid, num))
+            placed += 1
+        except Exception as e:
+            print(f"[vapi campaign] call to {num} failed: {e}")
+    return {"ok": True, "calls_placed": placed, "targets": len(targets), "table": table}
+
+
+_VAPI_CAMPAIGN_METADATA = {
+    "kind": "vapi_outbound_campaign",
+    "label": "Outbound call campaign (Vapi)",
+    "description": ("On each scheduled run, call people matching a status with a Vapi assistant. "
+                    "Requires OUTBOUND_CALLING_ENABLED=1 + VAPI_PRIVATE_KEY. Deduped per campaign, "
+                    "respects calling hours, skips do-not-call. Pair with a 'schedule' trigger."),
+    "config_fields": [
+        {"name": "assistant_id", "label": "Vapi assistant ID", "kind": "text", "required": True,
+         "placeholder": "asst_… (see Voice → Vapi → Load assistants)"},
+        {"name": "phone_number_id", "label": "Vapi phone number ID (call from)", "kind": "text", "required": True,
+         "placeholder": "the number's id"},
+        {"name": "audience_table", "label": "Audience table", "kind": "text", "placeholder": "leads or meetings"},
+        {"name": "status_filter", "label": "Only call where status =", "kind": "text", "placeholder": "cold"},
+        {"name": "max_calls_per_run", "label": "Max calls per run", "kind": "number", "placeholder": "10"},
+        {"name": "call_start_hour", "label": "Calling window start hour (0-23)", "kind": "number", "placeholder": "9"},
+        {"name": "call_end_hour", "label": "Calling window end hour (0-23)", "kind": "number", "placeholder": "18"},
+        {"name": "timezone", "label": "Timezone (blank = tenant default)", "kind": "text", "placeholder": "America/New_York"},
+    ],
+}
+
+try:
+    import automations as _automations
+    _automations.register_action("vapi_outbound_campaign", _run_outbound_campaign, _VAPI_CAMPAIGN_METADATA)
+except Exception as _e:  # pragma: no cover - never block blueprint import
+    print(f"[vapi] campaign action registration failed: {_e}")

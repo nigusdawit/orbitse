@@ -1319,7 +1319,12 @@ def _execute_run(run_id: int) -> None:
     deadline = time.time() + MAX_RUN_SECONDS
     # `__deadline` is read by actions like `delay` so they can clamp their
     # blocking time and surface as a `timeout` instead of overshooting.
-    ctx: Dict[str, Any] = {"trigger": trigger_data, "__deadline": deadline}
+    # __dry_run + __automation_id let actions that have real-world side effects (e.g. the Vapi
+    # outbound-call campaign) no-op on a test and scope their own dedup. Additive — other
+    # actions ignore extra ctx keys (like __deadline).
+    ctx: Dict[str, Any] = {"trigger": trigger_data, "__deadline": deadline,
+                           "__dry_run": bool(run.get("is_dry_run")),
+                           "__automation_id": run.get("automation_id")}
     step_results: List[Dict[str, Any]] = []
     final_status = "succeeded"
     error_text = ""
