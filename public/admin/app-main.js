@@ -7426,6 +7426,7 @@
         el.innerHTML = 'Private key: ' + badge + ' &nbsp; <span class="vp-muted">' + extras.join(' · ') + '</span>';
       } catch (e) { el.textContent = 'Could not load Vapi status.'; }
       vapiLoadCompliance();
+      vapiLoadWebVoice();
     }
 
     async function vapiProbe() {
@@ -7491,6 +7492,13 @@
         set('vapi-in-assistant', '<option value="">— none —</option>' + optA);
         set('vapi-prov-assistant', '<option value="">No assistant (assign later)</option>' + optA);
         set('vapi-web-assistant', optA);
+        // visitor voice-button config selects (preserve current selection across reloads)
+        var wvA = document.getElementById('wv-assistant'), wvN = document.getElementById('wv-number');
+        var selA = wvA && wvA.value, selN = wvN && wvN.value;
+        set('wv-assistant', '<option value="">— pick an assistant —</option>' + optA);
+        set('wv-number', '<option value="">— pick a number —</option>' + optN);
+        if (wvA && selA) wvA.value = selA;
+        if (wvN && selN) wvN.value = selN;
         const box = document.getElementById('vapi-call-box'); if (box) box.style.display = assistants.length ? '' : 'none';
         const inNum = document.getElementById('vapi-in-number'); if (inNum) inNum.onchange = vapiSyncInboundAssistant;
         vapiSyncInboundAssistant();
@@ -7626,6 +7634,50 @@
         });
         const d = await res.json().catch(() => ({}));
         if (res.ok && d.success) { if (out) out.innerHTML = '<span style="color:#22c55e;">✓ Saved</span>'; showToast('Saved'); vapiLoadStatus(); }
+        else if (out) out.innerHTML = '<span style="color:#ef4444;">✗ Failed</span>';
+      } catch (e) { if (out) out.innerHTML = '<span style="color:#ef4444;">✗ Failed</span>'; }
+      finally { if (typeof restore === 'function') restore(); }
+    }
+
+    /* ----- Visitor "Talk to us" voice button config (super-admin) ----- */
+    function _wvEnsureOption(sel, val) {
+      // make a saved id selectable even before "Load assistants & numbers" populates the dropdown
+      if (!sel || !val) return;
+      if (![].some.call(sel.options, function (o) { return o.value === val; })) {
+        const o = document.createElement('option'); o.value = val; o.textContent = val; sel.appendChild(o);
+      }
+    }
+    async function vapiLoadWebVoice() {
+      try {
+        const d = await (await fetch('/admin/api/vapi/web-voice', { credentials: 'same-origin' })).json();
+        const setV = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+        const en = document.getElementById('wv-enabled'); if (en) en.checked = !!d.enabled;
+        setV('wv-mode', d.mode || 'both');
+        setV('wv-label', d.button_label || 'Talk to us');
+        setV('wv-cap', (d.daily_call_cap != null ? d.daily_call_cap : 50));
+        const a = document.getElementById('wv-assistant'); if (a && d.assistant_id) { _wvEnsureOption(a, d.assistant_id); a.value = d.assistant_id; }
+        const n = document.getElementById('wv-number'); if (n && d.phone_number_id) { _wvEnsureOption(n, d.phone_number_id); n.value = d.phone_number_id; }
+      } catch (e) {}
+    }
+    async function vapiSaveWebVoice(btn) {
+      const out = document.getElementById('wv-result');
+      const val = (id) => { const el = document.getElementById(id); return el ? el.value : ''; };
+      const payload = {
+        enabled: !!((document.getElementById('wv-enabled') || {}).checked),
+        mode: val('wv-mode') || 'both',
+        assistant_id: val('wv-assistant'),
+        phone_number_id: val('wv-number'),
+        button_label: (val('wv-label') || '').trim(),
+        daily_call_cap: parseInt(val('wv-cap'), 10),
+      };
+      const restore = setButtonBusy(btn, 'Saving…');
+      try {
+        const res = await fetch('/admin/api/vapi/web-voice', {
+          method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (res.ok && d.success) { if (out) out.innerHTML = '<span style="color:#22c55e;">✓ Saved</span>'; showToast('Saved'); }
         else if (out) out.innerHTML = '<span style="color:#ef4444;">✗ Failed</span>';
       } catch (e) { if (out) out.innerHTML = '<span style="color:#ef4444;">✗ Failed</span>'; }
       finally { if (typeof restore === 'function') restore(); }

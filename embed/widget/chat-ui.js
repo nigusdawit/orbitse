@@ -26,6 +26,7 @@
     settings: {}, gallery: [], history: [], open: false,
     els: {}, immersive: null, theme: {},
     lastAgentMsgId: 0, _agentPollTimer: null,   // 095 §2.4 P3 human-takeover poll
+    webVoice: {}, _vapiWeb: null,               // visitor voice-button config + lazy web-SDK client
   };
 
   function api(p) { return (S.apiBase || "") + p; }
@@ -567,6 +568,7 @@
       S.els.panel.appendChild(S.els.foot);
       closeOverlay();
     });
+    if (S.webVoice && S.webVoice.enabled) buildVoiceUI(root);
   }
   function submitFoot() { var v = S.els.footInput.value; S.els.footInput.value = ""; send(v); }
   function openPanel() {
@@ -575,6 +577,127 @@
     S.els.footInput.focus();
   }
   function closePanel() { S.els.root.classList.remove("aap-open"); S.open = false; }
+
+  /* ---- Visitor "Talk to us" voice button (browser call + phone callback) ----
+     Config comes from /api/voice/web-config. Browser mode lazy-loads the Vapi
+     web SDK and calls the concierge assistant (which carries KB + brand context).
+     Phone mode asks the platform to dial a number the visitor types — that path is
+     heavily rate-limited server-side. All visitor text enters the DOM via
+     textContent / .value, never innerHTML (the embed has no DOMPurify). */
+  function buildVoiceUI(root) {
+    var w = S.webVoice || {};
+    var head = root.querySelector(".aap-head");
+    var panel = S.els.panel;
+    if (!head || !panel) return;
+
+    var launch = document.createElement("button");
+    launch.className = "aap-voice-launch";
+    launch.setAttribute("aria-label", "Voice call");
+    launch.textContent = "📞";
+    head.insertBefore(launch, head.querySelector(".aap-close"));
+
+    var card = document.createElement("div");
+    card.className = "aap-voice";
+    var ch = document.createElement("div"); ch.className = "aap-voice-head";
+    var back = document.createElement("button"); back.className = "aap-voice-back"; back.textContent = "←"; back.setAttribute("aria-label", "Back");
+    var ct = document.createElement("span"); ct.className = "aap-voice-title"; ct.textContent = w.button_label || "Talk to us";
+    ch.appendChild(back); ch.appendChild(ct);
+    var body = document.createElement("div"); body.className = "aap-voice-body";
+
+    if (w.browser) {
+      var bbtn = document.createElement("button");
+      bbtn.className = "aap-voice-browser";
+      bbtn.textContent = "🎙  Talk now in your browser";
+      var ebtn = document.createElement("button");
+      ebtn.className = "aap-voice-end"; ebtn.textContent = "■  End call"; ebtn.style.display = "none";
+      body.appendChild(bbtn); body.appendChild(ebtn);
+      bbtn.addEventListener("click", function () { startWebCall(); });
+      ebtn.addEventListener("click", endWebCall);
+      S._voiceBrowserBtn = bbtn; S._voiceEndBtn = ebtn;
+    }
+
+    if (w.phone) {
+      var pwrap = document.createElement("div"); pwrap.className = "aap-voice-phone";
+      var plabel = document.createElement("label"); plabel.className = "aap-voice-plabel";
+      plabel.textContent = w.browser ? "Or have us call you:" : "Enter your number and we'll call you:";
+      var num = document.createElement("input"); num.type = "tel"; num.className = "aap-voice-num";
+      num.placeholder = "+1 555 123 4567"; num.setAttribute("autocomplete", "tel");
+      var hp = document.createElement("input"); hp.type = "text"; hp.className = "aap-voice-hp";
+      hp.setAttribute("tabindex", "-1"); hp.setAttribute("autocomplete", "off"); hp.setAttribute("aria-hidden", "true");
+      var cbtn = document.createElement("button"); cbtn.className = "aap-voice-call"; cbtn.textContent = "📞  Call me";
+      pwrap.appendChild(plabel); pwrap.appendChild(num); pwrap.appendChild(hp); pwrap.appendChild(cbtn);
+      body.appendChild(pwrap);
+      cbtn.addEventListener("click", function () { requestCallback(num, hp, cbtn); });
+      num.addEventListener("keydown", function (e) { if (e.key === "Enter") requestCallback(num, hp, cbtn); });
+    }
+
+    var note = document.createElement("div"); note.className = "aap-voice-note";
+    note.textContent = "Calls may be recorded. Standard message and data rates may apply.";
+    body.appendChild(note);
+    var status = document.createElement("div"); status.className = "aap-voice-status"; status.setAttribute("aria-live", "polite");
+    body.appendChild(status);
+    S._voiceStatus = status;
+
+    card.appendChild(ch); card.appendChild(body);
+    panel.appendChild(card);
+
+    launch.addEventListener("click", function (e) { e.stopPropagation(); root.classList.add("aap-voice-open"); openPanel(); });
+    back.addEventListener("click", function () { root.classList.remove("aap-voice-open"); });
+  }
+
+  function _vstatus(msg, kind) {
+    if (!S._voiceStatus) return;
+    S._voiceStatus.textContent = msg || "";
+    S._voiceStatus.className = "aap-voice-status" + (kind ? " " + kind : "");
+  }
+  function _voiceToggleInCall(inCall) {
+    if (S._voiceBrowserBtn) S._voiceBrowserBtn.style.display = inCall ? "none" : "";
+    if (S._voiceEndBtn) S._voiceEndBtn.style.display = inCall ? "" : "none";
+  }
+
+  function startWebCall() {
+    var w = S.webVoice || {};
+    if (!w.public_key || !w.assistant_id) { _vstatus("Voice isn't available right now.", "err"); return; }
+    _vstatus("Connecting… (allow microphone access)");
+    var go = function (Vapi) {
+      try {
+        if (!S._vapiWeb) {
+          S._vapiWeb = new Vapi(w.public_key);
+          S._vapiWeb.on("call-start", function () { _vstatus("● In call — speak now", "ok"); _voiceToggleInCall(true); });
+          S._vapiWeb.on("call-end", function () { _vstatus("Call ended."); _voiceToggleInCall(false); });
+          S._vapiWeb.on("error", function () { _vstatus("Couldn't connect the call.", "err"); _voiceToggleInCall(false); });
+        }
+        S._vapiWeb.start(w.assistant_id);   // concierge assistant carries context; server applies compliance
+      } catch (e) { _vstatus("Couldn't start the call.", "err"); }
+    };
+    // load the web SDK on demand (jsDelivr ESM build); mod.default is the Vapi class
+    import("https://cdn.jsdelivr.net/npm/@vapi-ai/web/+esm")
+      .then(function (mod) { go(mod.default || mod.Vapi || mod); })
+      .catch(function () { _vstatus("Couldn't load the voice engine (network blocked?).", "err"); });
+  }
+  function endWebCall() {
+    try { if (S._vapiWeb) S._vapiWeb.stop(); } catch (e) {}
+    _voiceToggleInCall(false);
+  }
+
+  function requestCallback(numEl, hpEl, btn) {
+    var phone = ((numEl && numEl.value) || "").trim();
+    if (!phone) { _vstatus("Enter your phone number first.", "err"); return; }
+    _vstatus("Requesting your call…");
+    if (btn) btn.disabled = true;
+    fetch(api("/api/voice/callback"), {
+      method: "POST", headers: hdrs({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        phone: phone, _hp: (hpEl && hpEl.value) || "",
+        session_id: S.sessionId, visitor_id: S.visitorId, page_url: location.href,
+      }),
+    }).then(function (r) { return r.json().catch(function () { return {}; }); })
+      .then(function (d) {
+        if (d && d.ok) { _vstatus(d.message || "Calling you now — please answer your phone.", "ok"); if (numEl) numEl.value = ""; }
+        else { _vstatus((d && d.message) || "We couldn't place the call right now.", "err"); }
+      }).catch(function () { _vstatus("Network error — please try again.", "err"); })
+      .then(function () { if (btn) btn.disabled = false; });
+  }
 
   function init(opts) {
     opts = opts || {};
@@ -596,8 +719,12 @@
     var pTheme = fetch(api("/api/theme"), { headers: hdrs() })
       .then(function (r) { return r.ok ? r.json() : {}; })
       .then(function (t) { S.theme = t || {}; }).catch(function () { S.theme = {}; });
+    // Visitor voice button config — present + enabled only when the super-admin turned it on.
+    var pWebVoice = fetch(api("/api/voice/web-config"), { headers: hdrs() })
+      .then(function (r) { return r.ok ? r.json() : {}; })
+      .then(function (w) { S.webVoice = w || {}; }).catch(function () { S.webVoice = {}; });
 
-    return Promise.all([pSettings, pGallery, pTheme]).then(function () {
+    return Promise.all([pSettings, pGallery, pTheme, pWebVoice]).then(function () {
       ensureFontsLoaded();
       buildDom();
       if (global.VoiceAgent) {

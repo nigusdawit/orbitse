@@ -115,6 +115,44 @@
           <span id="vapi-compliance-result" class="vp-muted"></span>
         </div>
       </div>
+
+      <hr style="border:none; border-top:1px solid var(--admin-border); margin:1.1rem 0;">
+      <div id="vapi-webvoice-box">
+        <strong>Visitor “Talk to us” voice button</strong>
+        <p class="vp-muted" style="margin-top:0.3rem;">Shows a voice button in your website widget. Visitors can talk live in their browser and/or ask you to call their phone. Pick your <em>concierge</em> assistant so the call has your business context (it uses your knowledge base + brand voice). <strong>Phone callbacks also require <code>OUTBOUND_CALLING_ENABLED</code> in your environment</strong> — and are rate-limited per visitor &amp; per number.</p>
+        <label style="display:block; margin:0.5rem 0;">
+          <input type="checkbox" id="wv-enabled" data-testid="checkbox-wv-enabled"> Enable the visitor voice button
+        </label>
+        <div class="vp-row" style="margin-top:0.3rem;">
+          <label class="vp-muted" style="min-width:150px;">Modes offered</label>
+          <select id="wv-mode" data-testid="select-wv-mode">
+            <option value="both">Browser call + phone callback</option>
+            <option value="browser">Browser call only</option>
+            <option value="phone">Phone callback only</option>
+          </select>
+        </div>
+        <div class="vp-row" style="margin-top:0.5rem;">
+          <label class="vp-muted" style="min-width:150px;">Assistant (concierge)</label>
+          <select id="wv-assistant" data-testid="select-wv-assistant"></select>
+        </div>
+        <div class="vp-row" style="margin-top:0.5rem;">
+          <label class="vp-muted" style="min-width:150px;">Call-from number</label>
+          <select id="wv-number" data-testid="select-wv-number"></select>
+        </div>
+        <div class="vp-row" style="margin-top:0.5rem;">
+          <label class="vp-muted" style="min-width:150px;">Button label</label>
+          <input type="text" id="wv-label" maxlength="60" placeholder="Talk to us" style="padding:0.4rem 0.6rem; border:1px solid var(--admin-border); border-radius:8px; background:var(--admin-input-bg, transparent); color:var(--admin-text);">
+        </div>
+        <div class="vp-row" style="margin-top:0.5rem;">
+          <label class="vp-muted" style="min-width:150px;">Max phone callbacks / day</label>
+          <input type="number" id="wv-cap" min="0" max="1000" placeholder="50" style="width:110px; padding:0.4rem 0.6rem; border:1px solid var(--admin-border); border-radius:8px; background:var(--admin-input-bg, transparent); color:var(--admin-text);">
+        </div>
+        <div class="vp-row" style="margin-top:0.6rem;">
+          <button class="btn btn-primary btn-sm" onclick="vapiSaveWebVoice(this)" data-testid="button-wv-save">Save voice button</button>
+          <span id="wv-result" class="vp-muted"></span>
+        </div>
+        <p class="vp-muted" style="margin-top:0.5rem;">Tip: click “Load assistants &amp; numbers” above to populate the dropdowns. The button appears in the embedded widget on your site automatically once enabled.</p>
+      </div>
     </div>
     </div>
     {% endif %}

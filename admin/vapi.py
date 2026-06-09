@@ -354,6 +354,191 @@ def vapi_compliance_save():
     return jsonify({"success": True, **saved})
 
 
+# --- visitor-facing "Talk to us" voice button (public; super-admin configured) -------------------
+# The embed widget can show a voice button with two modes: an in-browser call (web SDK + the
+# publishable public key) and an outbound phone callback (we dial a number the visitor enters).
+# The phone callback is an ANONYMOUS-triggered auto-dialer, so it is the most security-sensitive
+# surface in the integration. It is guarded, in order, by: super-admin enable -> the
+# OUTBOUND_CALLING_ENABLED deployment switch -> per-IP / per-number / global-per-day rate limits
+# (the limiter FAILS CLOSED) -> the daily spend cap (fails open) -> E.164 validation (must carry a
+# country code) -> a honeypot field. Context comes from the configured CONCIERGE assistant (its
+# custom-LLM brain injects KB + brand voice every turn); each call is also tagged with page +
+# visitor metadata. We never expose the private key or the phone_number_id to the browser.
+
+_WEB_VOICE_DEFAULTS = {"enabled": False, "mode": "both", "assistant_id": "",
+                       "phone_number_id": "", "button_label": "Talk to us", "daily_call_cap": 50}
+_WEB_VOICE_MODES = ("browser", "phone", "both")
+_WEB_CALL_PER_IP_HOUR = 3       # max callbacks one IP can request per hour (best-effort; IP isn't trusted)
+_WEB_CALL_PER_PHONE_DAY = 2     # max callbacks to a single number per day (anti-harassment — the real cap)
+
+
+def _normalize_e164(raw):
+    """Return a '+<digits>' E.164 number, or '' if it doesn't look valid. We REQUIRE an explicit
+    leading '+' (country code) rather than guessing one — guessing risks dialing the wrong country."""
+    s = "".join(ch for ch in str(raw or "") if ch.isdigit() or ch == "+").strip()
+    if not s.startswith("+"):
+        return ""
+    digits = s[1:]
+    if not digits.isdigit() or not (8 <= len(digits) <= 15):
+        return ""
+    return "+" + digits
+
+
+def _web_voice_get():
+    """Read the visitor-voice config blob. Fail-OPEN to defaults (feature simply stays off)."""
+    out = dict(_WEB_VOICE_DEFAULTS)
+    try:
+        row = query_db("SELECT web_voice FROM site_settings WHERE id=1", fetchone=True)
+        raw = (row or {}).get("web_voice") if isinstance(row, dict) else None
+        blob = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        if isinstance(blob, dict):
+            out["enabled"] = bool(blob.get("enabled"))
+            m = str(blob.get("mode") or "both")
+            out["mode"] = m if m in _WEB_VOICE_MODES else "both"
+            out["assistant_id"] = str(blob.get("assistant_id") or "")[:120]
+            out["phone_number_id"] = str(blob.get("phone_number_id") or "")[:120]
+            out["button_label"] = (str(blob.get("button_label") or "").strip()[:60]) or "Talk to us"
+            try:
+                out["daily_call_cap"] = max(0, min(int(blob.get("daily_call_cap", 50)), 1000))
+            except (TypeError, ValueError):
+                out["daily_call_cap"] = 50
+    except Exception:
+        pass
+    return out
+
+
+def _web_voice_save(blob):
+    m = str(blob.get("mode") or "both")
+    clean = {"enabled": bool(blob.get("enabled")),
+             "mode": m if m in _WEB_VOICE_MODES else "both",
+             "assistant_id": str(blob.get("assistant_id") or "")[:120],
+             "phone_number_id": str(blob.get("phone_number_id") or "")[:120],
+             "button_label": (str(blob.get("button_label") or "").strip()[:60]) or "Talk to us"}
+    try:
+        clean["daily_call_cap"] = max(0, min(int(blob.get("daily_call_cap", 50)), 1000))
+    except (TypeError, ValueError):
+        clean["daily_call_cap"] = 50
+    execute_db("UPDATE site_settings SET web_voice=%s::jsonb WHERE id=1", (json.dumps(clean),))
+    return clean
+
+
+@vapi_bp.route("/admin/api/vapi/web-voice", methods=["GET"])
+@admin_required
+def vapi_web_voice_get():
+    g = _require_super_admin_role()
+    if g is not None:
+        return g
+    return jsonify(_web_voice_get())
+
+
+@vapi_bp.route("/admin/api/vapi/web-voice", methods=["POST"])
+@admin_required
+def vapi_web_voice_save():
+    g = _require_super_admin_role()
+    if g is not None:
+        return g
+    return jsonify({"success": True, **_web_voice_save(request.get_json(silent=True) or {})})
+
+
+@vapi_bp.route("/api/voice/web-config", methods=["GET"])
+def vapi_web_voice_config():
+    """PUBLIC: the embed widget reads this to decide whether to show the voice button + in which
+    modes. Exposes ONLY the publishable public key + assistant id (browser mode) — never the
+    private key or the phone_number_id (the phone call is placed server-side)."""
+    cfg = _web_voice_get()
+    if not cfg["enabled"]:
+        return jsonify({"enabled": False})
+    out = {"enabled": True, "mode": cfg["mode"], "button_label": cfg["button_label"]}
+    pk = _vapi_public_key()
+    out["browser"] = bool(cfg["mode"] in ("browser", "both") and pk and cfg["assistant_id"])
+    if out["browser"]:
+        out["public_key"] = pk
+        out["assistant_id"] = cfg["assistant_id"]
+    out["phone"] = bool(cfg["mode"] in ("phone", "both") and _outbound_enabled()
+                        and _vapi_configured() and cfg["phone_number_id"] and cfg["assistant_id"])
+    return jsonify(out)
+
+
+@vapi_bp.route("/api/voice/callback", methods=["POST"])
+def vapi_web_voice_callback():
+    """PUBLIC: a visitor asks us to call their phone. Anonymous-triggered outbound → fully guarded
+    (see the section header). Returns {ok} without ever echoing the number back."""
+    body = request.get_json(silent=True) or {}
+    if (str(body.get("_hp") or "")).strip():
+        return jsonify({"ok": True})   # honeypot tripped → look successful, dial nobody
+    cfg = _web_voice_get()
+    if not (cfg["enabled"] and cfg["mode"] in ("phone", "both")):
+        return jsonify({"ok": False, "error": "unavailable"}), 404
+    if not _outbound_enabled():
+        return jsonify({"ok": False, "error": "unavailable",
+                        "message": "Phone callbacks aren't available right now."}), 503
+    if not (_vapi_configured() and cfg["assistant_id"] and cfg["phone_number_id"]):
+        return jsonify({"ok": False, "error": "unavailable"}), 503
+    phone = _normalize_e164(body.get("phone") or "")
+    if not phone:
+        return jsonify({"ok": False, "error": "bad_number",
+                        "message": "Enter your number in international format, e.g. +15551234567."}), 400
+    ip = (request.remote_addr or "unknown")[:45]   # XFF deliberately not trusted (see app._client_ip)
+    # Rate limits — the limiter FAILS CLOSED: a DB hiccup must never open the auto-dialer.
+    try:
+        n_ip = (query_db("SELECT COUNT(*) AS n FROM web_call_requests WHERE ip=%s "
+                         "AND created_at >= NOW() - INTERVAL '1 hour'", (ip,), fetchone=True) or {}).get("n", 0)
+        if n_ip >= _WEB_CALL_PER_IP_HOUR:
+            return jsonify({"ok": False, "error": "rate_limited",
+                            "message": "Too many requests — please try again later."}), 429
+        n_phone = (query_db("SELECT COUNT(*) AS n FROM web_call_requests WHERE phone=%s "
+                            "AND created_at >= NOW() - INTERVAL '1 day'", (phone,), fetchone=True) or {}).get("n", 0)
+        if n_phone >= _WEB_CALL_PER_PHONE_DAY:
+            return jsonify({"ok": False, "error": "rate_limited",
+                            "message": "This number has reached today's callback limit."}), 429
+        cap = cfg["daily_call_cap"]
+        if cap > 0:
+            n_day = (query_db("SELECT COUNT(*) AS n FROM web_call_requests "
+                              "WHERE created_at >= CURRENT_DATE", fetchone=True) or {}).get("n", 0)
+            if n_day >= cap:
+                return jsonify({"ok": False, "error": "unavailable",
+                                "message": "Callbacks are paused for today."}), 503
+    except Exception as e:
+        capture_exc(e, "vapi.web_callback.ratelimit")
+        return jsonify({"ok": False, "error": "unavailable"}), 503
+    # Daily spend cap (cost) — fail-OPEN, consistent with the campaign.
+    try:
+        scap = float(get_ai_setting("daily_spend_cap_usd") or 0)
+        if scap > 0 and compute_today_spend().get("total_usd", 0.0) >= scap:
+            return jsonify({"ok": False, "error": "unavailable",
+                            "message": "Callbacks are paused for today."}), 503
+    except Exception:
+        pass
+    # Place the call: concierge assistant (context-rich brain) + page/visitor metadata + compliance.
+    tid = current_tenant_id()
+    meta = {"source": "web_widget",
+            "visitor_id": str(body.get("visitor_id") or "")[:80],
+            "session_id": str(body.get("session_id") or "")[:80],
+            "page_url": str(body.get("page_url") or "")[:300]}
+    cbody = {"assistantId": cfg["assistant_id"], "phoneNumberId": cfg["phone_number_id"],
+             "customer": {"number": phone}, "metadata": meta}
+    ov = _vapi_assistant_overrides()
+    if ov:
+        cbody["assistantOverrides"] = ov
+    try:
+        res = _vapi_post("/call", cbody)
+        cid = (res.get("id") or "") if isinstance(res, dict) else ""
+    except Exception as e:
+        capture_exc(e, "vapi.web_callback.place")
+        print(f"[vapi] web callback failed: {e}")
+        return jsonify({"ok": False, "error": "call_failed",
+                        "message": "We couldn't place the call. Please try again later."}), 502
+    try:
+        execute_db("INSERT INTO web_call_requests (tenant_id, ip, phone, mode, vapi_call_id) "
+                   "VALUES (%s,%s,%s,'phone',%s)", (tid, ip, phone, cid))
+        execute_db("INSERT INTO voice_calls (tenant_id, provider, vapi_call_id, assistant_id, call_sid, "
+                   "to_number, direction, status) VALUES (%s,'vapi',%s,%s,%s,%s,'outbound','initiated')",
+                   (tid, cid, cfg["assistant_id"], cid, phone))
+    except Exception as e:
+        print(f"[vapi] web callback log failed: {e}")
+    return jsonify({"ok": True, "message": "Calling you now — please answer your phone."})
+
+
 # --- inbound webhook (public; Vapi posts call events here) --------------------
 
 def _upsert_call(tid, vid, assistant_id, cust, phone, direction, *, status=None, ended_reason=None,

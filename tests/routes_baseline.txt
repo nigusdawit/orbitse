@@ -244,6 +244,7 @@ GET /admin/api/vapi/assistants
 GET /admin/api/vapi/compliance
 GET /admin/api/vapi/phone-numbers
 GET /admin/api/vapi/status
+GET /admin/api/vapi/web-voice
 GET /admin/api/video-gallery
 GET /admin/api/visitor-personas
 GET /admin/api/visitor-profiles
@@ -300,6 +301,7 @@ GET /api/video-gallery
 GET /api/voice/intro
 GET /api/voice/settings
 GET /api/voice/tts/stream/consume
+GET /api/voice/web-config
 GET /blog/<string:slug>
 GET /booking/<string:token>/cancel
 GET /booking/<string:token>/contract
@@ -497,6 +499,7 @@ POST /admin/api/vapi/call
 POST /admin/api/vapi/compliance
 POST /admin/api/vapi/phone-number
 POST /admin/api/vapi/probe
+POST /admin/api/vapi/web-voice
 POST /admin/api/video-gallery
 POST /admin/api/visitor-personas
 POST /admin/api/voice-intros
@@ -518,6 +521,7 @@ POST /api/track/duration
 POST /api/track/pageview
 POST /api/vapi/llm/chat/completions
 POST /api/velo/refresh-registration
+POST /api/voice/callback
 POST /api/voice/log
 POST /api/voice/sample
 POST /api/voice/stt

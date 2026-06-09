@@ -25027,6 +25027,21 @@ def vapi_llm_completions():
         _call = data.get("call")
         call_id = (_call.get("id") if isinstance(_call, dict) else None) or data.get("call_id") or ""
 
+        # Context: if the call carries widget metadata (where the visitor is / how they started the
+        # call), tell the brain so it can be relevant. The concierge prompt already injects KB +
+        # brand voice every turn; this just adds situational context. Best-effort, never fatal.
+        try:
+            _meta = (_call or {}).get("metadata") if isinstance(_call, dict) else None
+            if isinstance(_meta, dict) and (_meta.get("page_url") or _meta.get("source")):
+                _ctx = "\n\nCALL CONTEXT:"
+                if _meta.get("source"):
+                    _ctx += " The visitor started this voice call from the %s." % str(_meta.get("source"))[:60]
+                if _meta.get("page_url"):
+                    _ctx += " They are currently on the page: %s" % str(_meta.get("page_url"))[:300]
+                system_text = system_text + _ctx
+        except Exception:
+            pass
+
         # The daily spend cap (AI Control knob) guards the voice brain too: stop generating once
         # today's total spend hits the cap — the same circuit-breaker the website chat uses. Checked
         # before any tokens are produced. enforce_cost_cap is itself fail-OPEN, so a glitch can't
