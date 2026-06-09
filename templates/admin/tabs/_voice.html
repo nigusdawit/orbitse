@@ -83,6 +83,37 @@
           <button class="btn btn-secondary btn-sm" onclick="vapiAssignNumber()" data-testid="button-vapi-assign">Assign</button>
         </div>
         <div id="vapi-in-result" class="vp-muted" style="margin-top:0.4rem;"></div>
+
+        <label class="vp-muted" style="margin-top:0.85rem; display:block;">Provision a new number — free Vapi number (US only, max 10 per wallet)</label>
+        <div class="vp-row">
+          <input type="text" id="vapi-prov-area" placeholder="Area code (e.g. 415)" maxlength="3" style="width:150px; padding:0.4rem 0.6rem; border:1px solid var(--admin-border); border-radius:8px; background:var(--admin-input-bg, transparent); color:var(--admin-text);">
+          <select id="vapi-prov-assistant" data-testid="select-vapi-prov-assistant"><option value="">No assistant (assign later)</option></select>
+          <button class="btn btn-secondary btn-sm" onclick="vapiProvisionNumber()" data-testid="button-vapi-provision">Get a free number</button>
+        </div>
+        <div id="vapi-prov-result" class="vp-muted" style="margin-top:0.4rem;"></div>
+
+        <label class="vp-muted" style="margin-top:0.85rem; display:block;">Talk to an assistant in your browser — test with your public key, no phone needed</label>
+        <div class="vp-row">
+          <select id="vapi-web-assistant" data-testid="select-vapi-web-assistant"></select>
+          <button class="btn btn-primary btn-sm" id="vapi-web-start" onclick="vapiStartWebCall()" data-testid="button-vapi-web-start">▶ Start call</button>
+          <button class="btn btn-secondary btn-sm" id="vapi-web-end" onclick="vapiEndWebCall()" style="display:none;">■ End call</button>
+        </div>
+        <div id="vapi-web-result" class="vp-muted" style="margin-top:0.4rem;"></div>
+      </div>
+
+      <hr style="border:none; border-top:1px solid var(--admin-border); margin:1.1rem 0;">
+      <div id="vapi-compliance-box">
+        <strong>Compliance &amp; recording</strong>
+        <p class="vp-muted" style="margin-top:0.3rem;">Applied to every call the platform places (campaigns, outbound, the browser test). Leave recording on and the consent line blank to use each assistant's own Vapi settings.</p>
+        <label style="display:block; margin:0.5rem 0;">
+          <input type="checkbox" id="vapi-rec-enabled" data-testid="checkbox-vapi-recording"> Record calls
+        </label>
+        <label class="vp-muted">Consent / disclosure first message (optional — spoken at the start of calls we place)</label>
+        <textarea id="vapi-consent-msg" rows="2" placeholder="e.g. This call may be recorded for quality. How can I help?" style="width:100%; box-sizing:border-box; padding:0.5rem 0.6rem; border:1px solid var(--admin-border); border-radius:8px; background:var(--admin-input-bg, transparent); color:var(--admin-text); font:inherit;"></textarea>
+        <div class="vp-row" style="margin-top:0.5rem;">
+          <button class="btn btn-primary btn-sm" onclick="vapiSaveCompliance(this)" data-testid="button-vapi-compliance-save">Save compliance</button>
+          <span id="vapi-compliance-result" class="vp-muted"></span>
+        </div>
       </div>
     </div>
     </div>

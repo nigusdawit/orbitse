@@ -25027,6 +25027,14 @@ def vapi_llm_completions():
         _call = data.get("call")
         call_id = (_call.get("id") if isinstance(_call, dict) else None) or data.get("call_id") or ""
 
+        # The daily spend cap (AI Control knob) guards the voice brain too: stop generating once
+        # today's total spend hits the cap — the same circuit-breaker the website chat uses. Checked
+        # before any tokens are produced. enforce_cost_cap is itself fail-OPEN, so a glitch can't
+        # silence a live call; only an actually-reached cap returns the 402.
+        _cap_block = enforce_cost_cap(surface="voice_call")
+        if _cap_block is not None:
+            return _cap_block
+
         def _round():
             if provider == "claude":
                 return _stream_round_claude(model, system_text, convo, [],

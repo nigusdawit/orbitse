@@ -241,6 +241,7 @@ GET /admin/api/tenant/features
 GET /admin/api/testimonials
 GET /admin/api/theme
 GET /admin/api/vapi/assistants
+GET /admin/api/vapi/compliance
 GET /admin/api/vapi/phone-numbers
 GET /admin/api/vapi/status
 GET /admin/api/video-gallery
@@ -493,6 +494,8 @@ POST /admin/api/team
 POST /admin/api/testimonials
 POST /admin/api/upload-image
 POST /admin/api/vapi/call
+POST /admin/api/vapi/compliance
+POST /admin/api/vapi/phone-number
 POST /admin/api/vapi/probe
 POST /admin/api/video-gallery
 POST /admin/api/visitor-personas

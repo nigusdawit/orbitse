@@ -7402,6 +7402,10 @@
 
     /* ===== Vapi (voice AI) integration panel — super-admin. No-ops for non-super
        (the panel elements are template-gated). ===== */
+    let _vapiPublicKey = '';     // publishable web-SDK key (from status), for the browser test
+    let _vapiOverrides = {};     // compliance assistantOverrides to apply to the browser test
+    let _vapiWeb = null;         // lazily-constructed @vapi-ai/web client (loaded on first call)
+
     async function vapiLoadStatus() {
       const el = document.getElementById('vapi-status');
       if (!el) return;
@@ -7411,6 +7415,8 @@
       if (llmEl) llmEl.value = window.location.origin + '/api/vapi/llm';
       try {
         const d = await (await fetch('/admin/api/vapi/status', { credentials: 'same-origin' })).json();
+        _vapiPublicKey = d.public_key || '';
+        _vapiOverrides = d.assistant_overrides || {};
         const badge = d.configured ? '<span class="vp-badge ok">key set</span>' : '<span class="vp-badge off">no key</span>';
         const extras = [
           d.public_key_set ? 'web SDK key ✓' : 'web SDK key ✗',
@@ -7419,6 +7425,7 @@
         ];
         el.innerHTML = 'Private key: ' + badge + ' &nbsp; <span class="vp-muted">' + extras.join(' · ') + '</span>';
       } catch (e) { el.textContent = 'Could not load Vapi status.'; }
+      vapiLoadCompliance();
     }
 
     async function vapiProbe() {
@@ -7482,6 +7489,8 @@
         set('vapi-call-number', optN);
         set('vapi-in-number', optN);
         set('vapi-in-assistant', '<option value="">— none —</option>' + optA);
+        set('vapi-prov-assistant', '<option value="">No assistant (assign later)</option>' + optA);
+        set('vapi-web-assistant', optA);
         const box = document.getElementById('vapi-call-box'); if (box) box.style.display = assistants.length ? '' : 'none';
         const inNum = document.getElementById('vapi-in-number'); if (inNum) inNum.onchange = vapiSyncInboundAssistant;
         vapiSyncInboundAssistant();
@@ -7538,6 +7547,88 @@
           out.innerHTML = '<span style="color:#ef4444;">✗ ' + escapeHTML(d.message || 'Failed') + '</span>';
         }
       } catch (e) { if (out) out.innerHTML = '<span style="color:#ef4444;">✗ Failed</span>'; }
+    }
+
+    /* ----- Vapi slice 4: number provisioning, in-browser test call, compliance ----- */
+    async function vapiProvisionNumber() {
+      const out = document.getElementById('vapi-prov-result');
+      const area = ((document.getElementById('vapi-prov-area') || {}).value || '').trim();
+      const assistant_id = (document.getElementById('vapi-prov-assistant') || {}).value || '';
+      if (out) out.textContent = 'Provisioning… (free Vapi numbers are US-only)';
+      try {
+        const res = await fetch('/admin/api/vapi/phone-number', {
+          method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ area_code: area, assistant_id }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (res.ok && d.success) {
+          if (out) out.innerHTML = '<span style="color:#22c55e;">✓ Provisioned' + (d.number ? ': ' + escapeHTML(d.number) : '') + '</span>';
+          showToast('Number provisioned'); vapiLoadAgents();
+        } else if (out) {
+          out.innerHTML = '<span style="color:#ef4444;">✗ ' + escapeHTML(d.message || 'Failed') + '</span>';
+        }
+      } catch (e) { if (out) out.innerHTML = '<span style="color:#ef4444;">✗ Failed</span>'; }
+    }
+
+    function _vapiWebToggle(inCall) {
+      const s = document.getElementById('vapi-web-start'), e = document.getElementById('vapi-web-end');
+      if (s) s.style.display = inCall ? 'none' : '';
+      if (e) e.style.display = inCall ? '' : 'none';
+    }
+
+    async function vapiStartWebCall() {
+      const out = document.getElementById('vapi-web-result');
+      const assistantId = (document.getElementById('vapi-web-assistant') || {}).value || '';
+      if (!_vapiPublicKey) { if (out) out.innerHTML = '<span style="color:#ef4444;">Set VAPI_PUBLIC_KEY to use the browser test.</span>'; return; }
+      if (!assistantId) { showToast('Pick an assistant', 'error'); return; }
+      if (out) out.textContent = 'Connecting… (allow microphone access)';
+      try {
+        if (!_vapiWeb) {
+          // load the web SDK on demand from jsDelivr's ESM build (admin convenience; not on any
+          // visitor critical path). mod.default is the Vapi class.
+          const mod = await import('https://cdn.jsdelivr.net/npm/@vapi-ai/web/+esm');
+          const Vapi = mod.default || mod.Vapi || mod;
+          _vapiWeb = new Vapi(_vapiPublicKey);
+          _vapiWeb.on('call-start', function () { const o = document.getElementById('vapi-web-result'); if (o) o.innerHTML = '<span style="color:#22c55e;">● In call — speak now</span>'; _vapiWebToggle(true); });
+          _vapiWeb.on('call-end', function () { const o = document.getElementById('vapi-web-result'); if (o) o.innerHTML = '<span class="vp-muted">Call ended.</span>'; _vapiWebToggle(false); });
+          _vapiWeb.on('error', function (err) { const o = document.getElementById('vapi-web-result'); if (o) o.innerHTML = '<span style="color:#ef4444;">✗ ' + escapeHTML((err && (err.message || err.errorMsg)) || 'Call error') + '</span>'; _vapiWebToggle(false); });
+        }
+        // the web SDK start()'s 2nd arg IS the assistantOverrides object (recording-off / consent)
+        const ov = (_vapiOverrides && Object.keys(_vapiOverrides).length) ? _vapiOverrides : undefined;
+        _vapiWeb.start(assistantId, ov);
+      } catch (e) {
+        if (out) out.innerHTML = '<span style="color:#ef4444;">✗ Could not start (SDK failed to load or mic blocked).</span>';
+      }
+    }
+
+    function vapiEndWebCall() {
+      try { if (_vapiWeb) _vapiWeb.stop(); } catch (e) {}
+      _vapiWebToggle(false);
+    }
+
+    async function vapiLoadCompliance() {
+      try {
+        const d = await (await fetch('/admin/api/vapi/compliance', { credentials: 'same-origin' })).json();
+        const rec = document.getElementById('vapi-rec-enabled'); if (rec) rec.checked = d.recording_enabled !== false;
+        const msg = document.getElementById('vapi-consent-msg'); if (msg) msg.value = d.consent_message || '';
+      } catch (e) {}
+    }
+
+    async function vapiSaveCompliance(btn) {
+      const out = document.getElementById('vapi-compliance-result');
+      const recording_enabled = !!((document.getElementById('vapi-rec-enabled') || {}).checked);
+      const consent_message = ((document.getElementById('vapi-consent-msg') || {}).value || '').trim();
+      const restore = setButtonBusy(btn, 'Saving…');
+      try {
+        const res = await fetch('/admin/api/vapi/compliance', {
+          method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ recording_enabled, consent_message }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (res.ok && d.success) { if (out) out.innerHTML = '<span style="color:#22c55e;">✓ Saved</span>'; showToast('Saved'); vapiLoadStatus(); }
+        else if (out) out.innerHTML = '<span style="color:#ef4444;">✗ Failed</span>';
+      } catch (e) { if (out) out.innerHTML = '<span style="color:#ef4444;">✗ Failed</span>'; }
+      finally { if (typeof restore === 'function') restore(); }
     }
 
     /* Reusable busy-state helper for buttons. Disables the button,

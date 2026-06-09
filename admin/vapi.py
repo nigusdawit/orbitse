@@ -34,6 +34,8 @@ from core import (
     _require_super_admin_role,
     current_tenant_id,
     capture_exc,
+    get_ai_setting,
+    compute_today_spend,
 )
 
 vapi_bp = Blueprint("vapi", __name__)
@@ -88,6 +90,55 @@ def _vapi_patch(path, body):
         return r.json()
 
 
+# --- voice compliance settings (recording + consent disclosure) --------------
+# Stored as a JSONB blob on the singleton site_settings row (id=1; migration 0044), mirroring the
+# appearance customizer's admin_theme_extra. Turned into Vapi `assistantOverrides` on every call WE
+# initiate (campaign, manual outbound, in-browser test) so the operator can centrally disable
+# recording or speak a consent disclosure without editing each assistant in Vapi.
+
+_VOICE_COMPLIANCE_DEFAULTS = {"recording_enabled": True, "consent_message": ""}
+
+
+def _voice_compliance_get():
+    """Read the compliance blob. Fail-OPEN to defaults — never block a call on a settings read."""
+    out = dict(_VOICE_COMPLIANCE_DEFAULTS)
+    try:
+        row = query_db("SELECT voice_compliance FROM site_settings WHERE id=1", fetchone=True)
+        raw = (row or {}).get("voice_compliance") if isinstance(row, dict) else None
+        blob = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        if isinstance(blob, dict):
+            if "recording_enabled" in blob:
+                out["recording_enabled"] = bool(blob.get("recording_enabled"))
+            if "consent_message" in blob:
+                out["consent_message"] = str(blob.get("consent_message") or "")[:2000]
+    except Exception:
+        pass
+    return out
+
+
+def _voice_compliance_save(blob):
+    """Persist the compliance blob to the singleton site_settings row. Returns the cleaned blob."""
+    clean = {"recording_enabled": bool(blob.get("recording_enabled", True)),
+             "consent_message": str(blob.get("consent_message") or "")[:2000]}
+    execute_db("UPDATE site_settings SET voice_compliance=%s::jsonb WHERE id=1", (json.dumps(clean),))
+    return clean
+
+
+def _vapi_assistant_overrides():
+    """Build assistantOverrides from compliance settings, or {} when there's nothing to override.
+    We only override to ENFORCE a non-default (recording OFF or a consent first-message), so a
+    default config sends no override and the assistant's own full settings apply unchanged.
+    `artifactPlan.recordingEnabled` + `firstMessage` are the documented Vapi override fields; both
+    are valid on POST /call and the web SDK start()."""
+    c = _voice_compliance_get()
+    ov = {}
+    if not c["recording_enabled"]:
+        ov["artifactPlan"] = {"recordingEnabled": False}
+    if c.get("consent_message"):
+        ov["firstMessage"] = c["consent_message"]
+    return ov
+
+
 # --- admin: status + connection test -----------------------------------------
 
 @vapi_bp.route("/admin/api/vapi/status", methods=["GET"])
@@ -99,6 +150,11 @@ def vapi_status():
     return jsonify({
         "configured": _vapi_configured(),
         "public_key_set": bool(_vapi_public_key()),
+        # the PUBLIC key is publishable (it's designed to ship to browsers); the super-admin panel
+        # uses it for the in-browser "Talk to assistant" test. assistant_overrides carries the
+        # compliance settings the web test should apply (recording off / consent first-message).
+        "public_key": _vapi_public_key(),
+        "assistant_overrides": _vapi_assistant_overrides(),
         "webhook_secret_set": bool(_vapi_webhook_secret()),
         "llm_secret_set": bool((os.environ.get("VAPI_LLM_SECRET")
                                 or os.environ.get("VAPI_WEBHOOK_SECRET") or "").strip()),
@@ -192,8 +248,12 @@ def vapi_place_call():
     if not customer.startswith("+"):
         return jsonify({"error": "bad_number", "message": "Use E.164 format, e.g. +15551234567."}), 400
     try:
-        res = _vapi_post("/call", {"assistantId": assistant_id, "phoneNumberId": phone_number_id,
-                                   "customer": {"number": customer}})
+        _body = {"assistantId": assistant_id, "phoneNumberId": phone_number_id,
+                 "customer": {"number": customer}}
+        _ov = _vapi_assistant_overrides()
+        if _ov:
+            _body["assistantOverrides"] = _ov
+        res = _vapi_post("/call", _body)
         call_id = res.get("id") or "" if isinstance(res, dict) else ""
         if call_id:
             try:
@@ -232,6 +292,66 @@ def vapi_assign_number():
         capture_exc(e, "vapi.assign_number")
         print(f"[vapi] assign number failed: {e}")
         return jsonify({"error": "assign_failed", "message": "Could not update the phone number."}), 502
+
+
+@vapi_bp.route("/admin/api/vapi/phone-number", methods=["POST"])
+@admin_required
+def vapi_provision_number():
+    """Provision a FREE Vapi-managed phone number (provider=vapi). US-only, max 10 per wallet.
+    Optionally attach an assistant (inbound) + a desired area code, and wire this number's events
+    to our /webhooks/vapi so inbound calls + reports land in the Voice/Cost surfaces."""
+    g = _require_super_admin_role()
+    if g is not None:
+        return g
+    if not _vapi_configured():
+        return jsonify({"error": "not_configured", "message": "Add VAPI_PRIVATE_KEY to provision a number."}), 400
+    body = request.get_json(silent=True) or {}
+    area = "".join(ch for ch in str(body.get("area_code") or "") if ch.isdigit())[:3]
+    assistant_id = (body.get("assistant_id") or "").strip()
+    name = (body.get("name") or "").strip()[:80]
+    payload = {"provider": "vapi"}
+    if area:
+        payload["numberDesiredAreaCode"] = area
+    if assistant_id:
+        payload["assistantId"] = assistant_id
+    if name:
+        payload["name"] = name
+    try:  # route the number's events to our webhook (best-effort; operator can fix it in Vapi)
+        payload["server"] = {"url": request.url_root.rstrip("/") + "/webhooks/vapi"}
+    except Exception:
+        pass
+    try:
+        res = _vapi_post("/phone-number", payload)
+        return jsonify({"success": True,
+                        "id": (res.get("id") if isinstance(res, dict) else "") or "",
+                        "number": (res.get("number") if isinstance(res, dict) else "") or ""})
+    except Exception as e:
+        capture_exc(e, "vapi.provision_number")
+        print(f"[vapi] provision number failed: {e}")
+        return jsonify({"error": "provision_failed",
+                        "message": "Vapi could not provision a number (free numbers are US-only, max 10 per wallet)."}), 502
+
+
+@vapi_bp.route("/admin/api/vapi/compliance", methods=["GET"])
+@admin_required
+def vapi_compliance_get():
+    """Read voice compliance settings (recording toggle + consent disclosure)."""
+    g = _require_super_admin_role()
+    if g is not None:
+        return g
+    return jsonify(_voice_compliance_get())
+
+
+@vapi_bp.route("/admin/api/vapi/compliance", methods=["POST"])
+@admin_required
+def vapi_compliance_save():
+    """Save voice compliance settings. Applied as assistantOverrides on calls we initiate."""
+    g = _require_super_admin_role()
+    if g is not None:
+        return g
+    body = request.get_json(silent=True) or {}
+    saved = _voice_compliance_save(body)
+    return jsonify({"success": True, **saved})
 
 
 # --- inbound webhook (public; Vapi posts call events here) --------------------
@@ -483,12 +603,24 @@ def _run_outbound_campaign(cfg, ctx):
     if ctx.get("__dry_run"):
         return {"ok": True, "dry_run": True, "would_call": len(targets),
                 "table": table, "status_filter": status_filter}
+    # Daily spend cap (AI Control knob, shared with chat + the voice brain): never let a scheduled
+    # campaign blow the budget. Checked once before the batch. Fail-OPEN (a glitch won't stall ops).
+    try:
+        _cap = float(get_ai_setting("daily_spend_cap_usd") or 0)
+        if _cap > 0 and compute_today_spend().get("total_usd", 0.0) >= _cap:
+            return {"ok": True, "calls_placed": 0, "skipped": "daily spend cap reached"}
+    except Exception:
+        pass
+    overrides = _vapi_assistant_overrides()   # recording-off / consent first-message, if configured
     placed = 0
     for r in targets:
         num = str(r["phone"]).strip()
         try:
-            res = _vapi_post("/call", {"assistantId": assistant_id, "phoneNumberId": phone_number_id,
-                                       "customer": {"number": num}})
+            _cbody = {"assistantId": assistant_id, "phoneNumberId": phone_number_id,
+                      "customer": {"number": num}}
+            if overrides:
+                _cbody["assistantOverrides"] = overrides
+            res = _vapi_post("/call", _cbody)
             cid = (res.get("id") or "") if isinstance(res, dict) else ""
             execute_db(
                 "INSERT INTO campaign_calls (tenant_id, automation_id, audience_table, audience_id, phone, vapi_call_id) "
