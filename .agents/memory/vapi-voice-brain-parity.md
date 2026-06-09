@@ -14,11 +14,12 @@ gallery/pricing). If those blocks are missing from the voice builder, the voice
 agent answers **generically** (invents made-up services) even though the website
 chat answers correctly — both supposedly "share the concierge prompt."
 
-**Why:** the voice path runs NO `lookup_*` agentic tool loop (it passes an empty
-tool list to the model). So unlike the website chat, it can't pull business
-detail on demand — anything the brain should know must be inlined into the voice
-system prompt up front (catalog for awareness + RAG `lookup_knowledge_base` for
-detail).
+**Why (historical):** the voice path used to run NO agentic tool loop (it passed
+an empty tool list to the model), so anything the brain should know had to be
+inlined up front. That is now only HALF true — the bridge runs a bounded tool
+loop (see "Action parity" below), so `lookup_*` tools CAN be called on demand. The
+inlined catalog still matters for instant awareness / low latency (avoids a tool
+round just to know what services exist), so keep inlining it.
 
 **How to apply:** when "voice doesn't know the business" but website chat does,
 first prove the endpoint works (curl it with `Bearer VAPI_LLM_SECRET`, test BOTH
@@ -28,11 +29,20 @@ vs what `_vapi_llm_system_prompt()` inlines and close the gap. Keep the index
 phrasing tool-free for voice (don't tell it to "call lookup_*"). Watch token
 bloat: `build_site_index()` is inlined every turn on the voice path.
 
-**Also:** the agentic ACTIONS (callback requests, etc.) are a separate concern —
-they require tools DEFINED ON THE VAPI ASSISTANT pointing at `/webhooks/vapi`
-(executed via `execute_chat_tool`), AND the bridge forwarding Vapi's tool list to
-the model (it currently passes `[]`). Knowledge parity and action parity are two
-independent fixes.
+**Action parity (DONE):** the bridge `_round()` now runs a bounded in-process tool
+loop (max 3 rounds) over `get_active_chat_tools(audience="velo")` and executes each
+call via `execute_chat_tool(name, args, session_id=call_id)` — so callback/lead/
+meeting requests are actually written, not just spoken. Tool calls run silently;
+spoken tokens stream live; the LAST round is forced tool-less (the visitor
+last-round-tool-less invariant) so a tool-happy turn never strands the call.
+Fail-open: if the tool inventory can't load, `_voice_tools=[]` → plain Q&A (the old
+behavior). **Two gates still apply per action:** `agent_skills.enabled` (tool
+visibility) AND the per-action `*_enabled` AI-Control knob (execution; e.g.
+`callback_requests_enabled`, `meetings_enabled` default OFF) — a disabled action
+returns a friendly "not available" string, it does not error. CHAT_TOOLS holds ONLY
+data-lookups + actions (no site-control tools), so this is safe over voice; you do
+NOT need tools defined on the Vapi assistant for this in-process path. **Why:**
+passing `[]` tools meant the model could only describe an action and nothing saved.
 
 **Caching contract:** the voice prompt builder returns a `(stable_prefix,
 volatile_suffix)` pair so prompt caching can re-use the static block. Stable =

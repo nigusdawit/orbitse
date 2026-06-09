@@ -25091,21 +25091,80 @@ def vapi_llm_completions():
         if _cap_block is not None:
             return _cap_block
 
+        # ACTION PARITY (voice can DO things, not just talk about them): give the
+        # voice brain the SAME active tool inventory the website chat uses
+        # (request_callback / capture_lead / book_meeting + the lookup_* data
+        # tools), executed in-process via execute_chat_tool. Without a tool list
+        # the model can only *describe* an action ("vocalizes the command") and
+        # nothing is ever saved. Fail-open: any error → empty tool list → plain
+        # spoken Q&A, exactly the prior behavior. (CHAT_TOOLS holds only data +
+        # action tools; site-control commands are prompt-steered text, so nothing
+        # here tries to drive a non-existent browser over the phone.)
+        try:
+            _voice_tools = get_active_chat_tools(audience="velo")
+        except Exception as _e:
+            print(f"[vapi_llm] tool inventory load failed; voice runs tool-less: {_e}")
+            _voice_tools = []
+        _sess = str(call_id or "")
+        # OpenAI-shaped system messages keep the stable-prefix / volatile-suffix
+        # split (for prompt caching); the tool loop mutates only a private copy.
+        _base_sys = [{"role": "system", "content": system_prefix}]
+        if system_suffix:
+            _base_sys.append({"role": "system", "content": system_suffix})
+
         def _round():
-            if provider == "claude":
-                # LIST form → _stream_round_claude caches ONLY the stable first part
-                # (cache_control breakpoint), leaving the volatile suffix uncached.
-                # When caching is OFF the parts are re-joined, so no behavior change.
-                _sys = [system_prefix] + ([system_suffix] if system_suffix else [])
-                return _stream_round_claude(model, _sys, convo, [],
-                                            max_tokens=max_tokens, temperature=temperature)
-            # OpenAI: stable system message FIRST (automatic prefix caching re-uses it
-            # across turns/calls), volatile suffix as a second system message after it.
-            _sys_msgs = [{"role": "system", "content": system_prefix}]
-            if system_suffix:
-                _sys_msgs.append({"role": "system", "content": system_suffix})
-            return _stream_round_openai(model, _sys_msgs + convo, [],
-                                        max_tokens=max_tokens, temperature=temperature)
+            # Bounded multi-round tool loop. Tool calls run SILENTLY — only the
+            # model's spoken text streams to Vapi; the result is fed back so the
+            # model can speak a natural confirmation next round. The LAST round is
+            # forced tool-less so a tool-happy turn always ends with a spoken
+            # answer instead of stranding the call (same invariant as the website
+            # chat loop). Caching ON: Claude gets a cache_control breakpoint on the
+            # stable system prefix; OpenAI auto-caches the leading system message.
+            _msgs = list(_base_sys) + convo
+            _max_rounds = 3
+            for _ridx in range(_max_rounds):
+                _round_tools = [] if _ridx == _max_rounds - 1 else _voice_tools
+                if provider == "claude":
+                    _csys, _cmsgs = _messages_for_claude_parts(_msgs)
+                    _iter = _stream_round_claude(
+                        model, _csys, _cmsgs, _tools_for_claude(_round_tools),
+                        max_tokens=max_tokens, temperature=temperature)
+                else:
+                    _iter = _stream_round_openai(
+                        model, _msgs, _round_tools,
+                        max_tokens=max_tokens, temperature=temperature)
+                _round_text = ""
+                _tcs = []
+                _finish = None
+                for ev in _iter:
+                    if ev[0] == "token":
+                        _round_text += ev[1]
+                        yield ev            # stream the spoken text live
+                    elif ev[0] == "tool_call":
+                        _tcs.append(ev[1])
+                    elif ev[0] == "usage":
+                        yield ev            # one cost-ledger row per round
+                    elif ev[0] == "finish":
+                        _finish = ev[1]
+                if _finish == "tool_calls" and _tcs:
+                    _msgs.append({
+                        "role": "assistant", "content": _round_text or "",
+                        "tool_calls": [
+                            {"id": tc["id"], "type": "function",
+                             "function": {"name": tc["name"], "arguments": tc["args"]}}
+                            for tc in _tcs]})
+                    for tc in _tcs:
+                        try:
+                            _res, _ = execute_chat_tool(tc["name"], tc["args"], session_id=_sess)
+                        except Exception as _te:
+                            print(f"[vapi_llm] tool '{tc.get('name')}' failed: {_te}")
+                            _res = json.dumps({"ok": False,
+                                               "message": "That action couldn't be completed right now."})
+                        _msgs.append({"role": "tool", "tool_call_id": tc["id"],
+                                      "content": _res})
+                    continue
+                # No tool calls → the spoken answer is complete.
+                return
 
         def _log_usage(u):
             try:
