@@ -112,7 +112,11 @@
 .aap-panel .aap-head .aap-voice-launch + .aap-close { margin-left: 6px; }
 .aap-voice {
   display: none; position: absolute; inset: 0; z-index: 3; flex-direction: column;
-  background: var(--aap-bg); backdrop-filter: blur(22px);
+  /* Opaque dark base (matches the .aap-overlay scrim) so the card fully hides the chat panel
+     behind it regardless of how transparent the site's glass theme is, with the brand --aap-bg
+     tint layered on top. */
+  background: linear-gradient(var(--aap-bg), var(--aap-bg)), #141418;
+  backdrop-filter: blur(22px);
 }
 .aap-root.aap-voice-open .aap-voice { display: flex; }
 .aap-voice-head {
