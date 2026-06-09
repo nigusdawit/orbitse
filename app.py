@@ -14253,12 +14253,13 @@ def _stream_round_claude(model, system, claude_messages, claude_tools, max_token
                 kw["system"] = blocks
         # ---- TOOLS ----
         if claude_tools:
-            if use_cache and _is_visitor and len(claude_tools) > 0:
-                # VISITOR path only: a cache_control breakpoint on the LAST tool
-                # caches the WHOLE tools block (tools precede system in Anthropic's
-                # cache order). A sub-1024-token tool set is silently ignored by
-                # Anthropic — a graceful no-op, never an error. Admin keeps sending
-                # tools verbatim (byte-for-byte unchanged).
+            if use_cache and len(claude_tools) > 0:
+                # A cache_control breakpoint on the LAST tool caches the WHOLE tools
+                # block (tools precede system in Anthropic's cache order). Applied to
+                # ALL callers (visitor AND admin) when caching is on, so admin chat
+                # gets the same tool-schema savings visitor chat does. A sub-1024-token
+                # tool set is silently ignored by Anthropic — a graceful no-op, never
+                # an error. Caching OFF keeps the verbatim (byte-for-byte) tools block.
                 ct = [dict(t) for t in claude_tools]
                 ct[-1] = {**ct[-1], "cache_control": {"type": "ephemeral"}}
                 kw["tools"] = ct
@@ -25256,26 +25257,65 @@ def _vapi_llm_voice_note():
 
 def _vapi_llm_system_prompt(last_user_text):
     """Assemble the concierge system prompt for a voice turn — mirrors api_chat's base prompt +
-    brand voice + scope/safety/escalation, plus compact KB context for the turn + a voice note."""
+    brand voice + scope/safety/escalation, plus compact KB context for the turn + a voice note.
+
+    Returns a (stable_prefix, volatile_suffix) PAIR rather than one joined string, so the caller
+    can keep the big byte-stable block (base prompt + site identity/index + brand voice + safety +
+    voice note) as a CACHEABLE PREFIX and put only the per-turn volatile bits (RAG knowledge, and
+    — added by the caller — call context) in the suffix. Prompt caching then re-uses the static
+    block across turns and even across different calls/visitors instead of re-billing it every
+    turn: Anthropic via a cache_control breakpoint on the prefix (list form), OpenAI via automatic
+    prefix caching when the prefix is sent as the first system message. The RAG/call-context parts
+    differ per turn, so they MUST stay out of the cached prefix or they'd bust it every turn."""
+    # ---- STABLE PREFIX (identical across turns AND across calls → cacheable) ----
     try:
         base = get_prompt("visitor_system", SYSTEM_PROMPT)
     except Exception:
         base = ""
-    parts = [base or ""]
+    stable = [base or ""]
+    # SITE IDENTITY + SITE INDEX — the SAME business-awareness blocks api_chat
+    # inlines into the website chat. Without these the voice brain only sees the
+    # generic base prompt and answers without knowledge of THIS business (it
+    # would invent generic services). The voice path runs NO lookup_* tool loop,
+    # so we inline the compact catalog (names/slugs) here for awareness; full
+    # detail still comes from the RELEVANT KNOWLEDGE (RAG) block in the suffix.
+    try:
+        settings = query_db(
+            "SELECT site_name, site_subtitle, hero_tagline, hero_title, hero_description "
+            "FROM site_settings WHERE id = 1", fetchone=True)
+        if isinstance(settings, dict):
+            stable.append(
+                "\n\nSITE IDENTITY:\n- Name: %s\n- Subtitle: %s\n- Tagline: %s\n- Title: %s\n- Description: %s" % (
+                    settings.get("site_name", "") or "", settings.get("site_subtitle", "") or "",
+                    settings.get("hero_tagline", "") or "", settings.get("hero_title", "") or "",
+                    settings.get("hero_description", "") or ""))
+    except Exception as e:
+        print(f"[vapi_llm] site identity load failed: {e}")
+    try:
+        site_index = build_site_index()
+        if site_index:
+            stable.append(
+                "\n\nSITE INDEX (everything this business actually offers — speak about THESE "
+                "items by name; do not invent services that aren't listed here):\n\n" + site_index)
+    except Exception as e:
+        print(f"[vapi_llm] site index load failed: {e}")
     try:
         cs = query_db("SELECT brand_voice FROM chatbot_settings WHERE id = 1", fetchone=True)
         bv = (cs.get("brand_voice") or "").strip() if isinstance(cs, dict) else ""
         if bv:
-            parts.append("\n\nBRAND VOICE: " + bv + "\n")
+            stable.append("\n\nBRAND VOICE: " + bv + "\n")
     except Exception:
         pass
     for fn in (_compose_scope_paragraph, _compose_safety_paragraph, _compose_escalation_paragraph):
         try:
             p = fn()
             if p:
-                parts.append(p)
+                stable.append(p)
         except Exception:
             pass
+    stable.append(_vapi_llm_voice_note())
+    # ---- VOLATILE SUFFIX (per-turn; kept OUT of the cached prefix) ----
+    volatile = []
     try:
         if last_user_text:
             chunks = lookup_knowledge_base(query=last_user_text, limit=3) or []
@@ -25284,11 +25324,10 @@ def _vapi_llm_system_prompt(last_user_text):
                     "- [" + str(c.get("source") or "doc") + "] " + str(c.get("content") or "")[:700]
                     for c in chunks
                 )
-                parts.append("\n\nRELEVANT KNOWLEDGE (use if helpful; cite the source):\n" + ctx + "\n")
+                volatile.append("\n\nRELEVANT KNOWLEDGE (use if helpful; cite the source):\n" + ctx + "\n")
     except Exception as e:
         print(f"[vapi_llm] kb lookup failed: {e}")
-    parts.append(_vapi_llm_voice_note())
-    return "".join(parts)
+    return "".join(p for p in stable if p), "".join(p for p in volatile if p)
 
 
 def _vapi_llm_chunk(cid, created, model, delta, finish):
@@ -25330,7 +25369,7 @@ def vapi_llm_completions():
         if not convo:
             convo = [{"role": "user", "content": "Hello?"}]
         last_user = next((m["content"] for m in reversed(convo) if m["role"] == "user"), "")
-        system_text = _vapi_llm_system_prompt(last_user)
+        system_prefix, system_suffix = _vapi_llm_system_prompt(last_user)
         provider, model = get_active_llm_provider()
         _call = data.get("call")
         call_id = (_call.get("id") if isinstance(_call, dict) else None) or data.get("call_id") or ""
@@ -25346,7 +25385,9 @@ def vapi_llm_completions():
                     _ctx += " The visitor started this voice call from the %s." % str(_meta.get("source"))[:60]
                 if _meta.get("page_url"):
                     _ctx += " They are currently on the page: %s" % str(_meta.get("page_url"))[:300]
-                system_text = system_text + _ctx
+                # Call context differs PER CALL, so it goes in the volatile suffix —
+                # never the cacheable prefix (which is shared across all calls).
+                system_suffix = system_suffix + _ctx
         except Exception:
             pass
 
@@ -25358,12 +25399,80 @@ def vapi_llm_completions():
         if _cap_block is not None:
             return _cap_block
 
+        # ACTION PARITY (voice can DO things, not just talk about them): give the
+        # voice brain the SAME active tool inventory the website chat uses
+        # (request_callback / capture_lead / book_meeting + the lookup_* data
+        # tools), executed in-process via execute_chat_tool. Without a tool list
+        # the model can only *describe* an action ("vocalizes the command") and
+        # nothing is ever saved. Fail-open: any error → empty tool list → plain
+        # spoken Q&A, exactly the prior behavior. (CHAT_TOOLS holds only data +
+        # action tools; site-control commands are prompt-steered text, so nothing
+        # here tries to drive a non-existent browser over the phone.)
+        try:
+            _voice_tools = get_active_chat_tools(audience="velo")
+        except Exception as _e:
+            print(f"[vapi_llm] tool inventory load failed; voice runs tool-less: {_e}")
+            _voice_tools = []
+        _sess = str(call_id or "")
+        # OpenAI-shaped system messages keep the stable-prefix / volatile-suffix
+        # split (for prompt caching); the tool loop mutates only a private copy.
+        _base_sys = [{"role": "system", "content": system_prefix}]
+        if system_suffix:
+            _base_sys.append({"role": "system", "content": system_suffix})
+
         def _round():
-            if provider == "claude":
-                return _stream_round_claude(model, system_text, convo, [],
-                                            max_tokens=max_tokens, temperature=temperature)
-            return _stream_round_openai(model, [{"role": "system", "content": system_text}] + convo, [],
-                                        max_tokens=max_tokens, temperature=temperature)
+            # Bounded multi-round tool loop. Tool calls run SILENTLY — only the
+            # model's spoken text streams to Vapi; the result is fed back so the
+            # model can speak a natural confirmation next round. The LAST round is
+            # forced tool-less so a tool-happy turn always ends with a spoken
+            # answer instead of stranding the call (same invariant as the website
+            # chat loop). Caching ON: Claude gets a cache_control breakpoint on the
+            # stable system prefix; OpenAI auto-caches the leading system message.
+            _msgs = list(_base_sys) + convo
+            _max_rounds = 3
+            for _ridx in range(_max_rounds):
+                _round_tools = [] if _ridx == _max_rounds - 1 else _voice_tools
+                if provider == "claude":
+                    _csys, _cmsgs = _messages_for_claude_parts(_msgs)
+                    _iter = _stream_round_claude(
+                        model, _csys, _cmsgs, _tools_for_claude(_round_tools),
+                        max_tokens=max_tokens, temperature=temperature)
+                else:
+                    _iter = _stream_round_openai(
+                        model, _msgs, _round_tools,
+                        max_tokens=max_tokens, temperature=temperature)
+                _round_text = ""
+                _tcs = []
+                _finish = None
+                for ev in _iter:
+                    if ev[0] == "token":
+                        _round_text += ev[1]
+                        yield ev            # stream the spoken text live
+                    elif ev[0] == "tool_call":
+                        _tcs.append(ev[1])
+                    elif ev[0] == "usage":
+                        yield ev            # one cost-ledger row per round
+                    elif ev[0] == "finish":
+                        _finish = ev[1]
+                if _finish == "tool_calls" and _tcs:
+                    _msgs.append({
+                        "role": "assistant", "content": _round_text or "",
+                        "tool_calls": [
+                            {"id": tc["id"], "type": "function",
+                             "function": {"name": tc["name"], "arguments": tc["args"]}}
+                            for tc in _tcs]})
+                    for tc in _tcs:
+                        try:
+                            _res, _ = execute_chat_tool(tc["name"], tc["args"], session_id=_sess)
+                        except Exception as _te:
+                            print(f"[vapi_llm] tool '{tc.get('name')}' failed: {_te}")
+                            _res = json.dumps({"ok": False,
+                                               "message": "That action couldn't be completed right now."})
+                        _msgs.append({"role": "tool", "tool_call_id": tc["id"],
+                                      "content": _res})
+                    continue
+                # No tool calls → the spoken answer is complete.
+                return
 
         def _log_usage(u):
             try:
