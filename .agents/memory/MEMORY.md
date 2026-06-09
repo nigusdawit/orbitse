@@ -16,3 +16,4 @@
 - [Public JS served as a cached bundle](public-js-bundle-cache.md) — public/script.js + voice.js are concatenated into a content-hashed bundle built once per worker; editing script.js requires a workflow RESTART (gunicorn --reload only watches .py) or the browser keeps the old code.
 - [Feature function vs visibility](feature-visibility-vs-function.md) — tenant_features has TWO gates: enabled (backend, tenant_has_feature) vs visible (admin UI, feature_visible); visible NULL=inherit enabled.
 - [Admin tab action authz](admin-tab-action-authz.md) — an action endpoint's role gate + _FEATURE_ROUTE_PREFIXES entry must match who can see the tab; a client-visible tab with super-admin-only actions gives dead buttons/403s.
+- [Vapi voice brain parity](vapi-voice-brain-parity.md) — voice custom-LLM bridge builds its OWN prompt; must inline SITE IDENTITY + build_site_index() or voice answers generic while website chat knows the business (voice runs no lookup_* tool loop).

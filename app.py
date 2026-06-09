@@ -24954,6 +24954,32 @@ def _vapi_llm_system_prompt(last_user_text):
     except Exception:
         base = ""
     parts = [base or ""]
+    # SITE IDENTITY + SITE INDEX — the SAME business-awareness blocks api_chat
+    # inlines into the website chat. Without these the voice brain only sees the
+    # generic base prompt and answers without knowledge of THIS business (it
+    # would invent generic services). The voice path runs NO lookup_* tool loop,
+    # so we inline the compact catalog (names/slugs) here for awareness; full
+    # detail still comes from the RELEVANT KNOWLEDGE (RAG) block below.
+    try:
+        settings = query_db(
+            "SELECT site_name, site_subtitle, hero_tagline, hero_title, hero_description "
+            "FROM site_settings WHERE id = 1", fetchone=True)
+        if isinstance(settings, dict):
+            parts.append(
+                "\n\nSITE IDENTITY:\n- Name: %s\n- Subtitle: %s\n- Tagline: %s\n- Title: %s\n- Description: %s" % (
+                    settings.get("site_name", "") or "", settings.get("site_subtitle", "") or "",
+                    settings.get("hero_tagline", "") or "", settings.get("hero_title", "") or "",
+                    settings.get("hero_description", "") or ""))
+    except Exception as e:
+        print(f"[vapi_llm] site identity load failed: {e}")
+    try:
+        site_index = build_site_index()
+        if site_index:
+            parts.append(
+                "\n\nSITE INDEX (everything this business actually offers — speak about THESE "
+                "items by name; do not invent services that aren't listed here):\n\n" + site_index)
+    except Exception as e:
+        print(f"[vapi_llm] site index load failed: {e}")
     try:
         cs = query_db("SELECT brand_voice FROM chatbot_settings WHERE id = 1", fetchone=True)
         bv = (cs.get("brand_voice") or "").strip() if isinstance(cs, dict) else ""
