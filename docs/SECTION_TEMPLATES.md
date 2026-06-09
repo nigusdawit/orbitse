@@ -67,9 +67,39 @@ Then pick it in the **Layout** dropdown and reload the public site. The section'
 | Persistence (merge `variant` into `settings`) | `admin/sitebuilder.py` (section PUT) |
 | Storage | `page_sections.settings.variant` (existing JSONB column — no migration) |
 
-## Server-rendered option (future)
+## Option B — server-rendered Jinja partials (IMPLEMENTED: team / spotlight)
 
-For SEO or designer-authored HTML, a variant can instead be a Jinja partial
-`templates/sections/<slug>/<variant>.html`, rendered with the same view-model server-side (the hero
-already renders server-side via `_get_hero_markup()`). The contract — the data shape — stays
-identical, so any section can graduate to server-rendering later without DB or admin changes.
+For SEO or designer-authored HTML, a variant can be a **Jinja partial** rendered server-side into the
+page source, instead of a JS function. Same selection (`settings.variant`), same admin dropdown, same
+fallback — only the authoring + render location differ. Sample: the **team** section's `spotlight`.
+
+- **Partial:** `templates/sections/team/spotlight.html` — plain HTML/Jinja, receives the view-model
+  `members: [{ name, title, bio, image_url }]` (Jinja autoescaping on). Its root carries
+  `data-ssr-section="team"`.
+- **Render + inject:** `app._render_section_partial(slug)` reads `settings.variant` and renders
+  `templates/sections/<slug>/<variant>.html` with the view-model; `_render_app_shell_response`
+  replaces a `<!-- SECTION_TEAM_INJECT -->` placeholder in `public/index.html`, so the markup is in
+  the **initial HTML source (SEO)**. Registry: `app._SSR_SECTION_VARIANTS`; data loaders:
+  `app._section_view_model(slug)`.
+- **Client coordination:** `renderTeam()` skips when it sees `[data-ssr-section]`. `default` stays
+  client-rendered (the placeholder is replaced with '').
+- **Fail-safe:** disabled / `default` / missing partial / any error → '' → the client renders the
+  default; a missing placeholder makes the inject a harmless no-op.
+
+### Add a server-rendered (Option B) variant
+1. Drop `templates/sections/<slug>/<variant>.html` (root gets `data-ssr-section="<slug>"`).
+2. Register it: add `<variant>` to `app._SSR_SECTION_VARIANTS[<slug>]` (+ a loader branch in
+   `app._section_view_model(<slug>)` if the section isn't wired yet).
+3. Add a `<!-- SECTION_<SLUG>_INJECT -->` placeholder in the section's shell in `public/index.html`
+   and a matching `.replace(...)` in `_render_app_shell_response`; have the client renderer early-skip
+   on `[data-ssr-section]`.
+4. Offer it in `SECTION_LAYOUTS.<slug>` (admin dropdown).
+
+## A vs B — pick per section (both ship as samples)
+- **A (JS template)** — fastest, no round-trip, fits the existing client render; not in initial source
+  (weaker SEO). Sample: **testimonials / carousel**.
+- **B (Jinja partial)** — designer-friendly HTML, **server-rendered = SEO**; the section moves to
+  server-render. Sample: **team / spotlight**. Mirrors the hero's `_get_hero_markup()` precedent.
+
+Both share the same `settings.variant` storage + admin picker, so a section can switch models later
+without DB or admin changes.

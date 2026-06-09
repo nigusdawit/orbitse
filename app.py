@@ -8217,6 +8217,50 @@ def _build_loading_initials_and_name():
         return "CS", "Loading"
 
 
+# --- Section template variants: SERVER-RENDERED path (Option B) -----------------------------------
+# A section's chosen variant (page_sections.settings.variant) can be a Jinja partial at
+# templates/sections/<slug>/<variant>.html. We render it server-side with the section's view-model
+# and inject it into the page HTML (so it's in the initial source = SEO-friendly, and a designer
+# authors plain HTML/Jinja). This mirrors the hero's server-render precedent. The chosen-variant
+# storage + the admin "Layout" picker are SHARED with the client-side (Option A) path. FAIL-SAFE:
+# any miss/error returns "" so the section falls back to its client-rendered default — never a crash.
+# POC: wired for 'team' (variant 'spotlight'); 'default' stays client-rendered.
+_SSR_SECTION_VARIANTS = {
+    "team": {"spotlight"},   # slug -> variant keys that have a server-side Jinja partial
+}
+
+
+def _section_view_model(slug):
+    """Load a section's data — the SAME view-model the client gets from /api/page-bundle. The
+    template only DISPLAYS this; adding a template never changes the data or its source."""
+    if slug == "team":
+        return {"members": query_db("SELECT * FROM team_members ORDER BY sort_order ASC") or []}
+    return {}
+
+
+def _render_section_partial(slug):
+    """Return server-rendered HTML for a section IF its selected variant is a Jinja partial, else "".
+    Reads page_sections.settings.variant; renders templates/sections/<slug>/<variant>.html with the
+    view-model. Fail-safe (returns "" on disabled/default/missing/error → client renders default)."""
+    try:
+        row = query_db("SELECT settings, enabled FROM page_sections WHERE slug=%s", (slug,), fetchone=True)
+        if not isinstance(row, dict) or not row.get("enabled"):
+            return ""
+        st = row.get("settings")
+        if isinstance(st, str):
+            try:
+                st = json.loads(st or "{}")
+            except ValueError:
+                st = {}
+        variant = ((st or {}).get("variant") or "default")
+        if variant not in _SSR_SECTION_VARIANTS.get(slug, set()):
+            return ""   # 'default' or a client-only variant → let the client render
+        return render_template("sections/%s/%s.html" % (slug, variant), **_section_view_model(slug))
+    except Exception as e:
+        capture_exc(e, "render_section_partial")
+        return ""
+
+
 @app.route("/")
 def serve_index(initial_section_dom_id=None, seo_overrides=None):
     """Serve the main public homepage.
@@ -8448,6 +8492,16 @@ def _render_app_shell_response(page=None, section_ids=None, initial_section_dom_
             html_content = html_content.replace("<!-- SENTRY_INJECT -->", sentry_html)
         elif sentry_html:
             html_content = html_content.replace("</head>", sentry_html + "\n</head>", 1)
+
+        # Section template variants — SERVER-RENDERED path (Option B). When a section's selected
+        # variant is a Jinja partial, render it here so it lands in the initial HTML source (SEO).
+        # Fail-safe: _render_section_partial returns "" on default/disabled/missing/error, and a
+        # missing placeholder makes .replace a harmless no-op — so this can never break the page.
+        try:
+            html_content = html_content.replace("<!-- SECTION_TEAM_INJECT -->", _render_section_partial("team"))
+        except Exception as e:
+            capture_exc(e, "section_inject.team")
+            html_content = html_content.replace("<!-- SECTION_TEAM_INJECT -->", "")
 
         # ----------------------------------------------------------------
         # First-paint logo treatment + accent-gradient body class injection

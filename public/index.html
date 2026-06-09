@@ -404,9 +404,11 @@ FONTS:
           <p class="section-subtitle">Get to know the passionate individuals who make it all happen.</p>
         </div>
 
-        <!-- Team Member Cards — populated by JavaScript -->
+        <!-- Team Member Cards — populated by JavaScript (default), OR server-rendered into the
+             placeholder below when a Jinja layout variant is selected (Option B); left empty, the
+             client renders the grid. -->
         <div id="team-grid" class="team-grid" data-testid="team-grid">
-          <!-- Team member cards are inserted here dynamically -->
+          <!-- SECTION_TEAM_INJECT -->
         </div>
       </div>
     </section>

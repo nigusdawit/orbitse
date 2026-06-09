@@ -642,7 +642,10 @@ function renderTestimonials() {
  */
 function renderTeam() {
   const grid = document.getElementById('team-grid');
-  if (!grid || !teamMembers.length) return;
+  if (!grid) return;
+  // Option B: if the server already rendered this section (a Jinja layout variant), don't overwrite it.
+  if (grid.querySelector('[data-ssr-section]')) return;
+  if (!teamMembers.length) return;
 
   grid.innerHTML = teamMembers.map((m, index) => {
     /* Optional member photo — show initials circle if no image */

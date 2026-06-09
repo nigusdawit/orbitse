@@ -3046,6 +3046,45 @@ body.theme-accent-gradient .section-divider {
   margin-top: auto;
 }
 
+/* Section-template POC (Option B) — team "spotlight" variant (server-rendered Jinja partial). */
+.tpl-team-spotlight {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  max-width: 60rem;
+  margin: 0 auto;
+}
+.tpl-team-spot-card {
+  display: flex;
+  gap: var(--space-lg);
+  align-items: center;
+  padding: var(--space-lg);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 18px;
+}
+.tpl-team-spot-photo {
+  flex: 0 0 96px;
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+.tpl-team-spot-ph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2rem;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.08);
+}
+.tpl-team-spot-name { margin: 0 0 0.15rem; font-size: 1.25rem; }
+.tpl-team-spot-title { margin: 0 0 0.5rem; opacity: 0.8; }
+.tpl-team-spot-bio { margin: 0; line-height: 1.55; opacity: 0.9; }
+@media (max-width: 600px) {
+  .tpl-team-spot-card { flex-direction: column; text-align: center; }
+}
+
 .testimonial-card {
   padding: var(--space-lg);
   border-radius: 0.375rem;

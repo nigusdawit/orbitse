@@ -5297,7 +5297,11 @@
     const SECTION_LAYOUTS = {
       testimonials: [
         { key: 'default',  label: 'Grid (classic)' },
-        { key: 'carousel', label: 'Carousel' },
+        { key: 'carousel', label: 'Carousel' },             // Option A: client-side JS template
+      ],
+      team: [
+        { key: 'default',   label: 'Grid (classic)' },
+        { key: 'spotlight', label: 'Spotlight (server-rendered)' },  // Option B: Jinja partial, SSR
       ],
     };
 

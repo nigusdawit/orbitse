@@ -82,3 +82,44 @@ def test_variant_does_not_clobber_other_settings():
         assert st.get("variant") == "carousel" and st.get("foo") == "bar"
     finally:
         c.put("/admin/api/page-sections/%d" % sid, headers=_CSRF, json={"settings": {}})
+
+
+# ---- Option B: server-rendered Jinja partial (team / spotlight) --------------
+
+def test_team_spotlight_is_server_rendered_into_homepage():
+    """Selecting the 'spotlight' Jinja variant renders the team section SERVER-SIDE into the homepage
+    HTML — present in the initial source (SEO), no JS needed."""
+    app.execute_db("DELETE FROM team_members WHERE name='SSR Tester'")
+    app.execute_db("INSERT INTO team_members (name, title, bio, image_url, sort_order) "
+                   "VALUES ('SSR Tester','Lead Engineer','Builds things.','',0)")
+    app.execute_db("UPDATE page_sections SET enabled=TRUE, settings='{\"variant\":\"spotlight\"}'::jsonb "
+                   "WHERE slug='team'")
+    try:
+        html = app.app.test_client().get("/").get_data(as_text=True)
+        assert 'data-ssr-section="team"' in html        # server-render marker (client renderTeam skips it)
+        assert "tpl-team-spotlight" in html             # the Jinja partial rendered
+        assert "SSR Tester" in html and "Lead Engineer" in html   # the view-model data, server-side
+    finally:
+        app.execute_db("UPDATE page_sections SET settings='{}'::jsonb WHERE slug='team'")
+        app.execute_db("DELETE FROM team_members WHERE name='SSR Tester'")
+
+
+def test_team_default_is_not_server_rendered():
+    """Default variant → no server render (client renders the grid); the placeholder is consumed."""
+    app.execute_db("UPDATE page_sections SET settings='{}'::jsonb WHERE slug='team'")
+    html = app.app.test_client().get("/").get_data(as_text=True)
+    assert 'data-ssr-section="team"' not in html
+    assert "<!-- SECTION_TEAM_INJECT -->" not in html   # placeholder replaced with '' (not leaked)
+
+
+def test_section_partial_failsafe_on_unknown_variant():
+    """An unknown variant (no Jinja partial) must NOT server-render and must NOT break the page."""
+    app.execute_db("UPDATE page_sections SET enabled=TRUE, settings='{\"variant\":\"does-not-exist\"}'::jsonb "
+                   "WHERE slug='team'")
+    try:
+        r = app.app.test_client().get("/")
+        assert r.status_code == 200
+        assert 'data-ssr-section="team"' not in r.get_data(as_text=True)
+        assert app._render_section_partial("team") == ""   # early-returns '' (variant not registered)
+    finally:
+        app.execute_db("UPDATE page_sections SET settings='{}'::jsonb WHERE slug='team'")

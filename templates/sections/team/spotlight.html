@@ -1,0 +1,29 @@
+{# templates/sections/team/spotlight.html — SERVER-RENDERED team layout (Option B POC).
+
+   A designer authors this as plain HTML/Jinja. It is rendered server-side by
+   _render_section_partial('team') in app.py and injected into the page source
+   (SEO-friendly — crawlers see it without running JS).
+
+   VIEW-MODEL CONTRACT (the data this template receives — same fields the client gets
+   from /api/page-bundle; this template only DISPLAYS them, never queries the DB):
+     members: [ { name, title, bio, image_url } ]
+
+   Jinja autoescaping is ON, so every {{ ... }} is HTML-escaped. The root element carries
+   data-ssr-section="team" so the client's renderTeam() detects the server render and skips
+   (it won't overwrite this markup). #}
+<div class="tpl-team-spotlight" data-ssr-section="team">
+  {% for m in members %}
+    <article class="tpl-team-spot-card">
+      {% if m.image_url %}
+        <img class="tpl-team-spot-photo" src="{{ m.image_url }}" alt="{{ m.name }}" loading="lazy">
+      {% else %}
+        <div class="tpl-team-spot-photo tpl-team-spot-ph">{{ (m.name or '?')[:1] | upper }}</div>
+      {% endif %}
+      <div class="tpl-team-spot-body">
+        <h3 class="tpl-team-spot-name">{{ m.name }}</h3>
+        {% if m.title %}<p class="tpl-team-spot-title">{{ m.title }}</p>{% endif %}
+        {% if m.bio %}<p class="tpl-team-spot-bio">{{ m.bio }}</p>{% endif %}
+      </div>
+    </article>
+  {% endfor %}
+</div>
