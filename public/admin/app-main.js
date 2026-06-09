@@ -5094,9 +5094,34 @@
       document.getElementById('team-sort-order').value = '0';
       const p = document.getElementById('team-form-panel'); p.style.display = '';
       gxOpenDrawer('Add team member', p, { onSave: saveTeamMember, saveLabel: 'Save member' });
+      _loadTeamExtraFields({});
     }
 
     function hideTeamForm() { gxCloseDrawer(); }
+
+    // Render the per-member custom-field inputs for the team section's ACTIVE template variant
+    // (from the manifest's item_fields), prefilled from the member's `extra`. Empty when the active
+    // layout declares no custom fields. Saved back into team_members.extra by saveTeamMember().
+    async function _loadTeamExtraFields(extra) {
+      const host = document.getElementById('team-extra-fields');
+      if (!host) return;
+      host.innerHTML = '';
+      try {
+        const [tpls, secs] = await Promise.all([
+          getSectionTemplates(),
+          fetch('/admin/api/page-sections').then(r => r.json()),
+        ]);
+        const team = (secs || []).find(s => s.slug === 'team');
+        let variant = 'default';
+        try { const st = team && (typeof team.settings === 'string' ? JSON.parse(team.settings) : team.settings) || {}; variant = (st && st.variant) || 'default'; } catch (e) {}
+        const meta = ((tpls.team || []).find(v => v.key === variant)) || {};
+        const fields = meta.item_fields || [];
+        if (!fields.length) return;
+        host.innerHTML = `<div class="gx-label" style="margin-top:1rem;">Custom fields — for the active “${esc(meta.label || variant)}” layout</div>`
+          + fields.map(f => `<div class="gx-field"><label class="gx-label">${esc(f.label)}</label>`
+            + `<input class="gx-input" type="${f.type === 'url' ? 'url' : 'text'}" data-extra-key="${esc(f.key)}" value="${_attrEsc(String((extra && extra[f.key]) || ''))}"></div>`).join('');
+      } catch (e) { /* fail-open: no custom fields shown */ }
+    }
 
     function editTeamMember(item) {
       document.getElementById('team-form-id').value = item.id;
@@ -5107,6 +5132,9 @@
       document.getElementById('team-sort-order').value = item.sort_order || 0;
       const p = document.getElementById('team-form-panel'); p.style.display = '';
       gxOpenDrawer('Edit: ' + (item.name || 'member'), p, { onSave: saveTeamMember, saveLabel: 'Save member' });
+      let _ex = item.extra || {};
+      if (typeof _ex === 'string') { try { _ex = JSON.parse(_ex); } catch (e) { _ex = {}; } }
+      _loadTeamExtraFields(_ex);
     }
 
     async function saveTeamMember() {
@@ -5118,6 +5146,14 @@
         image_url: document.getElementById('team-image').value,
         sort_order: parseInt(document.getElementById('team-sort-order').value) || 0
       };
+      // Per-member custom fields (the active layout's item_fields). Only include `extra` when such
+      // inputs are present, so saving a member under a no-custom-field layout preserves existing extra.
+      const _exInputs = document.querySelectorAll('#team-extra-fields [data-extra-key]');
+      if (_exInputs.length) {
+        const _extra = {};
+        _exInputs.forEach(inp => { _extra[inp.getAttribute('data-extra-key')] = inp.value; });
+        data.extra = _extra;
+      }
 
       try {
         const url = id ? `/admin/api/team/${id}` : '/admin/api/team';
@@ -5294,21 +5330,22 @@
     // (public/script.js → SECTION_TEMPLATES); these are just the {key,label} pairs the admin
     // "Layout" dropdown offers, keyed by section slug. Keep the keys in sync with that registry.
     // (Production: serve this manifest from one endpoint so adding a template is a single edit.)
-    const SECTION_LAYOUTS = {
-      testimonials: [
-        { key: 'default',  label: 'Grid (classic)' },
-        { key: 'carousel', label: 'Carousel' },             // Option A: client-side JS template
-      ],
-      team: [
-        { key: 'default',   label: 'Grid (classic)' },
-        { key: 'spotlight', label: 'Spotlight (server-rendered)' },  // Option B: Jinja partial, SSR
-      ],
-    };
+    // Section template manifest — the SINGLE source for the admin Layout UI (each section's variants
+    // + their options schema + per-item custom fields). Fetched once from /admin/api/section-templates;
+    // covers both client-rendered (Option A) and server-rendered (Option B) variants.
+    let _sectionTemplates = null;
+    async function getSectionTemplates() {
+      if (_sectionTemplates) return _sectionTemplates;
+      try { _sectionTemplates = await (await fetch('/admin/api/section-templates', { credentials: 'same-origin' })).json(); }
+      catch (e) { _sectionTemplates = {}; }
+      return _sectionTemplates || {};
+    }
 
     async function loadPageSections() {
       try {
         const res = await fetch('/admin/api/page-sections');
         const sections = await res.json();
+        const _tpls = await getSectionTemplates();
         const tbody = document.getElementById('page-sections-tbody');
 
         if (!sections.length) {
@@ -5328,16 +5365,23 @@
           // variants (SECTION_LAYOUTS). Reads the current choice from settings.variant; saving
           // sends just {variant} to the section PUT. Sections without variants show a dash.
           let layoutCell = '<span style="color:var(--admin-text-muted);">&mdash;</span>';
-          const _lopts = SECTION_LAYOUTS[s.slug];
-          if (_lopts) {
+          const _vlist = (_tpls && _tpls[s.slug]) || null;
+          if (_vlist && _vlist.length) {
             let _cur = 'default';
             try {
               const _st = (typeof s.settings === 'string') ? JSON.parse(s.settings) : (s.settings || {});
               _cur = (_st && _st.variant) || 'default';
             } catch (_e) { _cur = 'default'; }
-            layoutCell = `<select class="form-select" style="padding:0.25rem 0.4rem; font-size:0.8rem;" onchange="setSectionLayout(${s.id}, this.value)" data-testid="select-section-layout-${s.id}">`
-              + _lopts.map(o => `<option value="${esc(o.key)}" ${o.key === _cur ? 'selected' : ''}>${esc(o.label)}</option>`).join('')
+            const _opts = [{ key: 'default', label: 'Default' }].concat(_vlist.map(v => ({ key: v.key, label: v.label })));
+            const _sel = `<select class="form-select" style="padding:0.25rem 0.4rem; font-size:0.8rem;" onchange="setSectionLayout(${s.id}, this.value)" data-testid="select-section-layout-${s.id}">`
+              + _opts.map(o => `<option value="${esc(o.key)}" ${o.key === _cur ? 'selected' : ''}>${esc(o.label)}</option>`).join('')
               + '</select>';
+            // Options gear — shown only when the CURRENT variant declares options.
+            const _curMeta = _vlist.find(v => v.key === _cur);
+            const _gear = (_curMeta && (_curMeta.options || []).length)
+              ? ` <button class="btn btn-secondary btn-sm" title="Layout options" onclick="openSectionOptions(${s.id}, '${esc(s.slug)}', '${esc(_cur)}')" data-testid="button-section-options-${s.id}">⚙</button>`
+              : '';
+            layoutCell = _sel + _gear;
           }
 
           // Background cell: thumbnail (or empty placeholder) + Upload + Clear.
@@ -5408,9 +5452,59 @@
           method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ variant: variant === 'default' ? '' : variant }),
         });
-        if (res.ok) showToast('Layout saved — reload the public site to see it');
+        if (res.ok) { showToast('Layout saved — reload the public site to see it'); loadPageSections(); }
         else showToast('Could not update layout', 'error');
       } catch (e) { showToast('Could not update layout', 'error'); }
+    }
+
+    // Build one option input from its schema entry {key,label,type,choices,default}, prefilled w/ cur.
+    function _optionFieldHtml(o, cur) {
+      const id = 'secopt-' + o.key;
+      const val = (cur !== undefined && cur !== null) ? cur : (o.default !== undefined ? o.default : '');
+      if (o.type === 'bool') {
+        return `<div class="gx-field"><label class="gx-label"><input type="checkbox" id="${id}" data-opt-key="${esc(o.key)}" data-opt-type="bool" ${val ? 'checked' : ''}> ${esc(o.label)}</label></div>`;
+      }
+      if (o.type === 'select') {
+        return `<div class="gx-field"><label class="gx-label" for="${id}">${esc(o.label)}</label>`
+          + `<select class="gx-input" id="${id}" data-opt-key="${esc(o.key)}" data-opt-type="select">`
+          + (o.choices || []).map(c => `<option value="${esc(c)}" ${String(c) === String(val) ? 'selected' : ''}>${esc(c)}</option>`).join('')
+          + '</select></div>';
+      }
+      return `<div class="gx-field"><label class="gx-label" for="${id}">${esc(o.label)}</label>`
+        + `<input class="gx-input" type="text" id="${id}" data-opt-key="${esc(o.key)}" data-opt-type="text" value="${_attrEsc(String(val))}"></div>`;
+    }
+
+    // Per-variant options editor — a drawer auto-built from the manifest's options schema. Saves to
+    // page_sections.settings.variant_options (merged server-side, so the chosen variant is preserved).
+    async function openSectionOptions(sectionId, slug, variant) {
+      const tpls = await getSectionTemplates();
+      const meta = ((tpls[slug] || []).find(v => v.key === variant)) || {};
+      const schema = meta.options || [];
+      if (!schema.length) { showToast('This layout has no options'); return; }
+      let cur = {};
+      try {
+        const secs = await (await fetch('/admin/api/page-sections')).json();
+        const sec = (secs || []).find(s => s.id === sectionId);
+        const st = sec && (typeof sec.settings === 'string' ? JSON.parse(sec.settings) : sec.settings) || {};
+        cur = (st && st.variant_options) || {};
+      } catch (e) {}
+      const panel = document.createElement('div');
+      panel.innerHTML = schema.map(o => _optionFieldHtml(o, cur[o.key])).join('');
+      gxOpenDrawer('Layout options — ' + (meta.label || variant), panel, {
+        saveLabel: 'Save options',
+        onSave: async () => {
+          const vo = {};
+          panel.querySelectorAll('[data-opt-key]').forEach(inp => {
+            const k = inp.getAttribute('data-opt-key'), t = inp.getAttribute('data-opt-type');
+            vo[k] = (t === 'bool') ? inp.checked : inp.value;
+          });
+          const r = await fetch(`/admin/api/page-sections/${sectionId}`, {
+            method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ variant_options: vo }),
+          });
+          if (r.ok) showToast('Options saved — reload the public site'); else showToast('Could not save options', 'error');
+        },
+      });
     }
 
     function autoGenerateSectionSlug() {

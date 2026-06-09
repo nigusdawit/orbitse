@@ -32,6 +32,10 @@
         <div class="gx-field" style="margin-bottom:0"><label class="gx-label" for="team-sort-order">Sort order</label>
           <input class="gx-input" type="number" id="team-sort-order" placeholder="0" value="0" data-testid="input-team-sort"></div>
       </div>
+      <!-- Per-member custom fields — populated by JS from the active section-template variant's
+           item_fields (e.g. the "Showcase" layout adds video_url / tagline / accent). Saved to
+           team_members.extra. Empty when the active layout declares no custom fields. -->
+      <div id="team-extra-fields"></div>
     </div>
 
     <table class="data-table" id="team-table">

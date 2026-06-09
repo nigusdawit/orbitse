@@ -8258,6 +8258,14 @@ SECTION_TEMPLATE_REGISTRY = {
             },
         },
     },
+    "testimonials": {
+        # Option A (client-rendered): data + render happen in the browser (window.SECTION_TEMPLATES);
+        # listed here only so the ONE manifest covers both models for the admin Layout dropdown.
+        "loader": None,
+        "variants": {
+            "carousel": {"label": "Carousel", "client": True, "options": [], "item_fields": []},
+        },
+    },
 }
 
 
@@ -8319,6 +8327,8 @@ def _render_section_partial(slug):
         variant = _section_active_variant(slug)
         if not variant:
             return ""
+        if (_section_variants(slug).get(variant) or {}).get("client"):
+            return ""   # client-rendered variant (Option A) → no server partial; the browser renders it
         return render_template(
             "sections/%s/%s.html" % (slug, variant),
             items=_section_items(slug),
@@ -8337,7 +8347,7 @@ def admin_section_templates():
     out = {}
     for slug, reg in SECTION_TEMPLATE_REGISTRY.items():
         out[slug] = [
-            {"key": vk, "label": vm.get("label") or vk,
+            {"key": vk, "label": vm.get("label") or vk, "client": bool(vm.get("client")),
              "options": vm.get("options") or [], "item_fields": vm.get("item_fields") or []}
             for vk, vm in (reg.get("variants") or {}).items()
         ]
@@ -8465,7 +8475,7 @@ def _render_app_shell_response(page=None, section_ids=None, initial_section_dom_
         # href="/styles.css"> snapshot — also get the fresh marker. Bump
         # _STYLES_CSS_VERSION whenever public/styles.css ships a visible
         # change that needs to invalidate cached copies.
-        _STYLES_CSS_VERSION = "20260608g"
+        _STYLES_CSS_VERSION = "20260609a"
         html_content = re.sub(
             r'href="/styles\.css(?:\?[^"]*)?"',
             f'href="/styles.css?v={_STYLES_CSS_VERSION}"',

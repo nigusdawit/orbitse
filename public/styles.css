@@ -3050,6 +3050,7 @@ body.theme-accent-gradient .section-divider {
 .tpl-team-spotlight {
   display: flex;
   flex-direction: column;
+  grid-column: 1 / -1;   /* span the full width of the parent #team-grid (itself a CSS grid) */
   gap: var(--space-lg);
   max-width: 60rem;
   margin: 0 auto;

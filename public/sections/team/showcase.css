@@ -5,6 +5,7 @@
 
 .tpl-team-showcase {
   display: grid;
+  grid-column: 1 / -1;   /* span the full width of the parent #team-grid (itself a CSS grid) */
   grid-template-columns: repeat(var(--tpl-cols, 3), minmax(0, 1fr));
   gap: var(--space-lg, 1.5rem);
   max-width: 72rem;

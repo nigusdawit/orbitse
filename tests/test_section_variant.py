@@ -197,3 +197,27 @@ def test_variant_options_defaults_merge():
     app.execute_db("UPDATE page_sections SET settings='{}'::jsonb WHERE slug='team'")
     opts = app._section_variant_options("team", "showcase")
     assert opts.get("columns") == "3" and opts.get("reveal") is True   # declared defaults applied
+
+
+def test_variant_options_persist_via_put():
+    """The admin options form saves {variant_options} → merged into settings (variant preserved)."""
+    c = _sa()
+    tid = app.query_db("SELECT id FROM page_sections WHERE slug='team'", fetchone=True)["id"]
+    try:
+        c.put("/admin/api/page-sections/%d" % tid, headers=_CSRF, json={"variant": "showcase"})
+        r = c.put("/admin/api/page-sections/%d" % tid, headers=_CSRF,
+                  json={"variant_options": {"columns": "4", "reveal": False}})
+        assert r.status_code == 200
+        st = _settings_of(tid)
+        assert st.get("variant") == "showcase"                          # variant preserved
+        assert st.get("variant_options", {}).get("columns") == "4"      # options stored
+    finally:
+        c.put("/admin/api/page-sections/%d" % tid, headers=_CSRF, json={"settings": {}})
+
+
+def test_manifest_includes_client_variant_flag():
+    """The single manifest also lists Option-A (client-rendered) variants, flagged client:true."""
+    d = _sa().get("/admin/api/section-templates").get_json()
+    assert "testimonials" in d
+    car = next((v for v in d["testimonials"] if v["key"] == "carousel"), None)
+    assert car and car.get("client") is True

@@ -121,6 +121,13 @@ def admin_update_page_section(section_id):
             settings = {**settings, "variant": _variant}
         else:
             settings = {k: v for k, v in settings.items() if k != "variant"}
+    # Per-variant OPTIONS (the variant's section-level config, e.g. columns/autoplay) — merged into
+    # settings.variant_options the same way, so saving options never clobbers the chosen variant.
+    if "variant_options" in data:
+        if not isinstance(settings, dict):
+            settings = {}
+        _vo = data.get("variant_options")
+        settings = {**settings, "variant_options": _vo if isinstance(_vo, dict) else {}}
     bg_image = data["bg_image"] if "bg_image" in data else (existing.get("bg_image") or "")
     # Per-section SEO overrides (Task #69). Trim and coerce to string;
     # empty strings are allowed and explicitly mean "fall back to the
