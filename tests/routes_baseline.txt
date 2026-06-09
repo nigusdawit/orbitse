@@ -240,6 +240,7 @@ GET /admin/api/team
 GET /admin/api/tenant/features
 GET /admin/api/testimonials
 GET /admin/api/theme
+GET /admin/api/vapi/status
 GET /admin/api/video-gallery
 GET /admin/api/visitor-personas
 GET /admin/api/visitor-profiles
@@ -488,6 +489,7 @@ POST /admin/api/super-admin/unlock
 POST /admin/api/team
 POST /admin/api/testimonials
 POST /admin/api/upload-image
+POST /admin/api/vapi/probe
 POST /admin/api/video-gallery
 POST /admin/api/visitor-personas
 POST /admin/api/voice-intros
@@ -522,6 +524,7 @@ POST /webhooks/twilio/inbound-sms
 POST /webhooks/twilio/sms-status
 POST /webhooks/twilio/voice
 POST /webhooks/twilio/voice-status
+POST /webhooks/vapi
 PUT /admin/api/addons/<int:addon_id>
 PUT /admin/api/admin-ai/<entity>/<int:item_id>
 PUT /admin/api/admin-ai/personas/<key>

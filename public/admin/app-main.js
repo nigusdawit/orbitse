@@ -7382,10 +7382,56 @@
         updatePremiumGating();
         onTtsProviderChange();
         onSttProviderChange();
+        vapiLoadStatus();   // Vapi integration panel (super-admin; no-op if absent)
       } catch (err) {
         console.error('Error loading voice settings:', err);
         window.appReportError(err, 'app-main.js:loadVoiceSettings');
       }
+    }
+
+    /* ===== Vapi (voice AI) integration panel — super-admin. No-ops for non-super
+       (the panel elements are template-gated). ===== */
+    async function vapiLoadStatus() {
+      const el = document.getElementById('vapi-status');
+      if (!el) return;
+      const urlEl = document.getElementById('vapi-webhook-url');
+      if (urlEl) urlEl.value = window.location.origin + '/webhooks/vapi';
+      try {
+        const d = await (await fetch('/admin/api/vapi/status', { credentials: 'same-origin' })).json();
+        const badge = d.configured ? '<span class="vp-badge ok">key set</span>' : '<span class="vp-badge off">no key</span>';
+        const extras = [
+          d.public_key_set ? 'web SDK key ✓' : 'web SDK key ✗',
+          d.webhook_secret_set ? 'webhook secret ✓' : 'webhook secret ✗',
+        ];
+        el.innerHTML = 'Private key: ' + badge + ' &nbsp; <span class="vp-muted">' + extras.join(' · ') + '</span>';
+      } catch (e) { el.textContent = 'Could not load Vapi status.'; }
+    }
+
+    async function vapiProbe() {
+      const out = document.getElementById('vapi-probe-result');
+      if (out) out.innerHTML = '<span class="vp-muted">Testing…</span>';
+      try {
+        const res = await fetch('/admin/api/vapi/probe', {
+          method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: '{}',
+        });
+        const d = await res.json().catch(() => ({}));
+        if (!out) return;
+        if (d.ok) {
+          const names = (d.assistants || []).map(a => escapeHTML(a.name || a.id || '')).filter(Boolean).slice(0, 6).join(', ');
+          out.innerHTML = '<span style="color:#22c55e;">✓ Connected</span> <span class="vp-muted">— '
+            + (d.count || 0) + ' assistant(s)' + (names ? ': ' + names : '') + '</span>';
+        } else {
+          out.innerHTML = '<span style="color:#ef4444;">✗ ' + escapeHTML(d.message || 'Connection failed') + '</span>';
+        }
+      } catch (e) { if (out) out.innerHTML = '<span style="color:#ef4444;">✗ Connection failed</span>'; }
+    }
+
+    function vapiCopyWebhook(btn) {
+      const inp = document.getElementById('vapi-webhook-url');
+      if (!inp) return;
+      inp.select();
+      try { navigator.clipboard.writeText(inp.value); showToast('Copied'); }
+      catch (e) { try { document.execCommand('copy'); showToast('Copied'); } catch (_) {} }
     }
 
     /* Reusable busy-state helper for buttons. Disables the button,

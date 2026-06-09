@@ -9,6 +9,34 @@
       </div>
     </div>
 
+    {% if is_super_admin() %}
+    <!-- ============== Vapi (voice AI) — platform integration (super-admin) ============== -->
+    <div class="form-card" id="vapi-panel">
+      <style>
+        #vapi-panel .vp-row { display:flex; gap:0.6rem; align-items:center; flex-wrap:wrap; }
+        #vapi-panel .vp-badge { display:inline-block; padding:1px 8px; border-radius:6px; font-size:0.74rem; font-weight:600; }
+        #vapi-panel .vp-badge.ok { background:rgba(22,101,52,0.18); color:#22c55e; }
+        #vapi-panel .vp-badge.off { background:rgba(127,29,29,0.18); color:#ef4444; }
+        #vapi-panel .vp-muted { color:var(--admin-text-muted); font-size:0.82rem; }
+        #vapi-panel input[readonly] { flex:1; min-width:260px; font-family:monospace; font-size:0.8rem; padding:0.4rem 0.6rem; border:1px solid var(--admin-border); border-radius:8px; background:var(--admin-input-bg, transparent); color:var(--admin-text); }
+      </style>
+      <h3 style="margin-top:0;">Vapi voice agents <span class="vp-muted">— super-admin</span></h3>
+      <p class="vp-muted">Vapi powers live phone/web voice agents. Set <code>VAPI_PRIVATE_KEY</code> (server), <code>VAPI_PUBLIC_KEY</code> (web SDK), and <code>VAPI_WEBHOOK_SECRET</code> in your environment, then point each Vapi assistant's <strong>Server URL</strong> at the webhook below (and set its Server Secret to your <code>VAPI_WEBHOOK_SECRET</code>).</p>
+      <div id="vapi-status" class="vp-muted">Loading…</div>
+      <div class="vp-row" style="margin-top:0.75rem;">
+        <button class="btn btn-secondary" onclick="vapiProbe()" data-testid="button-vapi-probe">Test connection</button>
+        <span id="vapi-probe-result"></span>
+      </div>
+      <div style="margin-top:0.85rem;">
+        <label class="vp-muted">Webhook URL — set this as your assistant's Server URL</label>
+        <div class="vp-row">
+          <input type="text" id="vapi-webhook-url" readonly onclick="this.select()" data-testid="text-vapi-webhook">
+          <button class="btn btn-secondary btn-sm" onclick="vapiCopyWebhook(this)">Copy</button>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
     <!-- ============== Section 1: Master toggles + defaults ============== -->
     <div class="form-card" id="voice-settings-form">
       <h3 style="margin-top:0;">Voice Settings</h3>

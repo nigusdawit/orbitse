@@ -43170,6 +43170,10 @@ app.register_blueprint(tenancy_bp)
 from admin.rbac import rbac_bp, rbac_authenticate, rbac_note_login  # noqa: E402
 app.register_blueprint(rbac_bp)
 
+# Vapi voice integration (slice 1): connection status/probe + the call webhook.
+from admin.vapi import vapi_bp  # noqa: E402
+app.register_blueprint(vapi_bp)
+
 # AI prompts blueprint (Track B / task 078, piece #1): the super-admin editable
 # system-prompt API — GET /admin/api/ai-prompts (list), PUT /admin/api/ai-prompts/<key>
 # (save), POST /admin/api/ai-prompts/<key>/reset (restore default), and GET
