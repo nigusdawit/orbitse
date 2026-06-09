@@ -8,6 +8,7 @@ the existing Voice + Cost surfaces).
 import os
 
 import app
+import admin.vapi as vapi_mod
 
 ADMIN_PW = os.environ.get("ADMIN_PASSWORD", "admin")
 _CSRF = {"X-CSRF-Token": "t"}
@@ -107,3 +108,69 @@ def test_vapi_webhook_logs_call_and_cost():
     finally:
         app.execute_db("DELETE FROM voice_calls WHERE vapi_call_id=%s", (cid,))
         app.execute_db("DELETE FROM voice_cost_events WHERE session_id=%s", (cid,))
+
+
+# --- slice 2: assistant registry + outbound/inbound calling ------------------
+
+def test_vapi_assistants_numbers_not_configured():
+    os.environ.pop("VAPI_PRIVATE_KEY", None)
+    os.environ.pop("VAPI_API_KEY", None)
+    c = _sa()
+    assert c.get("/admin/api/vapi/assistants").get_json()["configured"] is False
+    assert c.get("/admin/api/vapi/phone-numbers").get_json()["configured"] is False
+
+
+def test_vapi_call_gating_and_validation():
+    cc = _client_session()
+    assert cc.post("/admin/api/vapi/call", headers=_CSRF, json={}).status_code == 403  # super-admin only
+    os.environ.pop("VAPI_PRIVATE_KEY", None)
+    os.environ.pop("VAPI_API_KEY", None)
+    c = _sa()
+    assert c.post("/admin/api/vapi/call", headers=_CSRF, json={}).status_code == 400  # not_configured
+    os.environ["VAPI_PRIVATE_KEY"] = "vp_test"
+    try:
+        assert c.post("/admin/api/vapi/call", headers=_CSRF,
+                      json={"assistant_id": "a"}).status_code == 400  # missing fields
+        assert c.post("/admin/api/vapi/call", headers=_CSRF,
+                      json={"assistant_id": "a", "phone_number_id": "p",
+                            "customer_number": "5551234"}).status_code == 400  # not E.164
+    finally:
+        os.environ.pop("VAPI_PRIVATE_KEY", None)
+
+
+def test_vapi_outbound_call_logs_row():
+    os.environ["VAPI_PRIVATE_KEY"] = "vp_test"
+    orig = vapi_mod._vapi_post
+    vapi_mod._vapi_post = lambda path, body: {"id": "vc_outbound_1"}
+    app.execute_db("DELETE FROM voice_calls WHERE vapi_call_id='vc_outbound_1'")
+    try:
+        r = _sa().post("/admin/api/vapi/call", headers=_CSRF,
+                       json={"assistant_id": "asst_x", "phone_number_id": "pn_x",
+                             "customer_number": "+15551234567"})
+        assert r.status_code == 200 and r.get_json()["success"] is True
+        row = app.query_db("SELECT * FROM voice_calls WHERE vapi_call_id='vc_outbound_1'", fetchone=True)
+        assert isinstance(row, dict)
+        assert row["provider"] == "vapi" and row["direction"] == "outbound"
+        assert row["assistant_id"] == "asst_x" and row["to_number"] == "+15551234567"
+    finally:
+        vapi_mod._vapi_post = orig
+        os.environ.pop("VAPI_PRIVATE_KEY", None)
+        app.execute_db("DELETE FROM voice_calls WHERE vapi_call_id='vc_outbound_1'")
+
+
+def test_vapi_assign_number():
+    cc = _client_session()
+    assert cc.patch("/admin/api/vapi/phone-number", headers=_CSRF,
+                    json={"phone_number_id": "p"}).status_code == 403
+    os.environ["VAPI_PRIVATE_KEY"] = "vp_test"
+    orig = vapi_mod._vapi_patch
+    vapi_mod._vapi_patch = lambda path, body: {"id": "pn_x"}
+    try:
+        c = _sa()
+        assert c.patch("/admin/api/vapi/phone-number", headers=_CSRF, json={}).status_code == 400  # missing
+        r = c.patch("/admin/api/vapi/phone-number", headers=_CSRF,
+                    json={"phone_number_id": "pn_x", "assistant_id": "asst_x"})
+        assert r.status_code == 200 and r.get_json()["success"] is True
+    finally:
+        vapi_mod._vapi_patch = orig
+        os.environ.pop("VAPI_PRIVATE_KEY", None)

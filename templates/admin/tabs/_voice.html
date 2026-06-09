@@ -34,6 +34,32 @@
           <button class="btn btn-secondary btn-sm" onclick="vapiCopyWebhook(this)">Copy</button>
         </div>
       </div>
+
+      <hr style="border:none; border-top:1px solid var(--admin-border); margin:1.1rem 0;">
+      <div class="vp-row" style="justify-content:space-between;">
+        <strong>Assistants &amp; calling</strong>
+        <button class="btn btn-secondary btn-sm" onclick="vapiLoadAgents()" data-testid="button-vapi-load-agents">Load assistants &amp; numbers</button>
+      </div>
+      <div id="vapi-agents" class="vp-muted" style="margin-top:0.5rem;">Click “Load assistants &amp; numbers”.</div>
+
+      <div id="vapi-call-box" style="display:none; margin-top:0.9rem;">
+        <label class="vp-muted">Outbound call</label>
+        <div class="vp-row">
+          <select id="vapi-call-assistant" data-testid="select-vapi-assistant"></select>
+          <select id="vapi-call-number" data-testid="select-vapi-number"></select>
+          <input type="tel" id="vapi-call-customer" placeholder="+15551234567" style="padding:0.4rem 0.6rem; border:1px solid var(--admin-border); border-radius:8px; background:var(--admin-input-bg, transparent); color:var(--admin-text);">
+          <button class="btn btn-primary btn-sm" onclick="vapiPlaceCall()" data-testid="button-vapi-call">Call</button>
+        </div>
+        <div id="vapi-call-result" class="vp-muted" style="margin-top:0.4rem;"></div>
+
+        <label class="vp-muted" style="margin-top:0.85rem; display:block;">Inbound — answer a number with an assistant</label>
+        <div class="vp-row">
+          <select id="vapi-in-number" data-testid="select-vapi-in-number"></select>
+          <select id="vapi-in-assistant" data-testid="select-vapi-in-assistant"></select>
+          <button class="btn btn-secondary btn-sm" onclick="vapiAssignNumber()" data-testid="button-vapi-assign">Assign</button>
+        </div>
+        <div id="vapi-in-result" class="vp-muted" style="margin-top:0.4rem;"></div>
+      </div>
     </div>
     {% endif %}
 

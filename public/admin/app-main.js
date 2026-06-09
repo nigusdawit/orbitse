@@ -7434,6 +7434,90 @@
       catch (e) { try { document.execCommand('copy'); showToast('Copied'); } catch (_) {} }
     }
 
+    /* ----- Vapi slice 2: assistant registry + outbound/inbound calling ----- */
+    let _vapiNumbers = [];
+
+    async function vapiLoadAgents() {
+      const wrap = document.getElementById('vapi-agents');
+      if (wrap) wrap.textContent = 'Loading…';
+      try {
+        const [aR, nR] = await Promise.all([
+          fetch('/admin/api/vapi/assistants', { credentials: 'same-origin' }),
+          fetch('/admin/api/vapi/phone-numbers', { credentials: 'same-origin' }),
+        ]);
+        const a = await aR.json(), n = await nR.json();
+        const assistants = a.assistants || [], numbers = n.phone_numbers || [];
+        _vapiNumbers = numbers;
+        if (!a.configured) {
+          if (wrap) wrap.innerHTML = '<span class="vp-muted">Add VAPI_PRIVATE_KEY to load assistants.</span>';
+          return;
+        }
+        if (wrap) wrap.innerHTML = '<span class="vp-muted">' + assistants.length + ' assistant(s), ' + numbers.length + ' number(s).</span>';
+        const optA = assistants.map(x => `<option value="${escapeHTML(x.id)}">${escapeHTML(x.name || x.id)}${x.model ? ' (' + escapeHTML(x.model) + ')' : ''}</option>`).join('');
+        const optN = numbers.map(x => `<option value="${escapeHTML(x.id)}">${escapeHTML(x.number || x.name || x.id)}</option>`).join('');
+        const set = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
+        set('vapi-call-assistant', optA);
+        set('vapi-call-number', optN);
+        set('vapi-in-number', optN);
+        set('vapi-in-assistant', '<option value="">— none —</option>' + optA);
+        const box = document.getElementById('vapi-call-box'); if (box) box.style.display = assistants.length ? '' : 'none';
+        const inNum = document.getElementById('vapi-in-number'); if (inNum) inNum.onchange = vapiSyncInboundAssistant;
+        vapiSyncInboundAssistant();
+      } catch (e) { if (wrap) wrap.innerHTML = '<span style="color:#ef4444;">Could not load.</span>'; }
+    }
+
+    function vapiSyncInboundAssistant() {
+      const numSel = document.getElementById('vapi-in-number');
+      const aSel = document.getElementById('vapi-in-assistant');
+      if (!numSel || !aSel) return;
+      const num = (_vapiNumbers || []).find(x => x.id === numSel.value);
+      aSel.value = (num && num.assistant_id) || '';
+    }
+
+    async function vapiPlaceCall() {
+      const out = document.getElementById('vapi-call-result');
+      const assistant_id = (document.getElementById('vapi-call-assistant') || {}).value || '';
+      const phone_number_id = (document.getElementById('vapi-call-number') || {}).value || '';
+      const customer_number = ((document.getElementById('vapi-call-customer') || {}).value || '').trim();
+      if (!assistant_id || !phone_number_id || !customer_number) {
+        showToast('Pick assistant, number, and enter a customer number', 'error'); return;
+      }
+      if (out) out.textContent = 'Dialing…';
+      try {
+        const res = await fetch('/admin/api/vapi/call', {
+          method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ assistant_id, phone_number_id, customer_number }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (res.ok && d.success) {
+          if (out) out.innerHTML = '<span style="color:#22c55e;">✓ Call started (' + escapeHTML(d.call_id || '') + ')</span>';
+          showToast('Call started');
+        } else if (out) {
+          out.innerHTML = '<span style="color:#ef4444;">✗ ' + escapeHTML(d.message || 'Call failed') + '</span>';
+        }
+      } catch (e) { if (out) out.innerHTML = '<span style="color:#ef4444;">✗ Call failed</span>'; }
+    }
+
+    async function vapiAssignNumber() {
+      const out = document.getElementById('vapi-in-result');
+      const phone_number_id = (document.getElementById('vapi-in-number') || {}).value || '';
+      const assistant_id = (document.getElementById('vapi-in-assistant') || {}).value || '';
+      if (!phone_number_id) { showToast('Pick a number', 'error'); return; }
+      try {
+        const res = await fetch('/admin/api/vapi/phone-number', {
+          method: 'PATCH', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone_number_id, assistant_id }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (res.ok && d.success) {
+          if (out) out.innerHTML = '<span style="color:#22c55e;">✓ ' + (assistant_id ? 'Assigned' : 'Cleared') + '</span>';
+          showToast('Saved'); vapiLoadAgents();
+        } else if (out) {
+          out.innerHTML = '<span style="color:#ef4444;">✗ ' + escapeHTML(d.message || 'Failed') + '</span>';
+        }
+      } catch (e) { if (out) out.innerHTML = '<span style="color:#ef4444;">✗ Failed</span>'; }
+    }
+
     /* Reusable busy-state helper for buttons. Disables the button,
        swaps the label to a spinner-prefixed loading message, and
        returns a function that restores the original state. Centralises

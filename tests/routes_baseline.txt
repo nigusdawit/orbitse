@@ -240,6 +240,8 @@ GET /admin/api/team
 GET /admin/api/tenant/features
 GET /admin/api/testimonials
 GET /admin/api/theme
+GET /admin/api/vapi/assistants
+GET /admin/api/vapi/phone-numbers
 GET /admin/api/vapi/status
 GET /admin/api/video-gallery
 GET /admin/api/visitor-personas
@@ -345,6 +347,7 @@ PATCH /admin/api/products/<int:pid>/stock
 PATCH /admin/api/scrape-schedules/<int:schedule_id>
 PATCH /admin/api/sphere-settings/enabled
 PATCH /admin/api/tenant/features/<name>
+PATCH /admin/api/vapi/phone-number
 PATCH,PUT /admin/api/pages/<int:page_id>
 POST /admin/api/admin-ai/<entity>
 POST /admin/api/admin-ai/<entity>/<int:item_id>/reset
@@ -489,6 +492,7 @@ POST /admin/api/super-admin/unlock
 POST /admin/api/team
 POST /admin/api/testimonials
 POST /admin/api/upload-image
+POST /admin/api/vapi/call
 POST /admin/api/vapi/probe
 POST /admin/api/video-gallery
 POST /admin/api/visitor-personas

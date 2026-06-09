@@ -61,6 +61,26 @@ def _vapi_get(path):
         return r.json()
 
 
+def _vapi_post(path, body):
+    key = _vapi_private_key()
+    with httpx.Client(timeout=30) as cl:
+        r = cl.post(_VAPI_BASE + path,
+                    headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
+                    json=body)
+        r.raise_for_status()
+        return r.json()
+
+
+def _vapi_patch(path, body):
+    key = _vapi_private_key()
+    with httpx.Client(timeout=30) as cl:
+        r = cl.patch(_VAPI_BASE + path,
+                     headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
+                     json=body)
+        r.raise_for_status()
+        return r.json()
+
+
 # --- admin: status + connection test -----------------------------------------
 
 @vapi_bp.route("/admin/api/vapi/status", methods=["GET"])
@@ -96,6 +116,113 @@ def vapi_probe():
         print(f"[vapi] probe failed: {e}")
         return jsonify({"ok": False, "error": "probe_failed",
                         "message": "Vapi rejected the key or is unreachable. Check VAPI_PRIVATE_KEY."})
+
+
+# --- assistant registry + calling (slice 2; super-admin) ---------------------
+
+@vapi_bp.route("/admin/api/vapi/assistants", methods=["GET"])
+@admin_required
+def vapi_assistants():
+    """List the account's Vapi assistants (live from Vapi). Both kinds show up here: managed
+    (Vapi-brained, e.g. Cold Lead Qualifier) and concierge (custom-llm, slice 3)."""
+    g = _require_super_admin_role()
+    if g is not None:
+        return g
+    if not _vapi_configured():
+        return jsonify({"configured": False, "assistants": []})
+    try:
+        data = _vapi_get("/assistant")
+        items = data if isinstance(data, list) else (data.get("results") or data.get("data") or [])
+        out = [{"id": a.get("id"), "name": a.get("name", ""),
+                "model": ((a.get("model") or {}) or {}).get("provider") or ""}
+               for a in items if isinstance(a, dict)]
+        return jsonify({"configured": True, "assistants": out})
+    except Exception as e:
+        print(f"[vapi] list assistants failed: {e}")
+        return jsonify({"configured": True, "assistants": [], "error": "Could not list assistants."})
+
+
+@vapi_bp.route("/admin/api/vapi/phone-numbers", methods=["GET"])
+@admin_required
+def vapi_phone_numbers():
+    """List the account's Vapi phone numbers (for outbound 'call from' + inbound assignment)."""
+    g = _require_super_admin_role()
+    if g is not None:
+        return g
+    if not _vapi_configured():
+        return jsonify({"configured": False, "phone_numbers": []})
+    try:
+        data = _vapi_get("/phone-number")
+        items = data if isinstance(data, list) else (data.get("results") or data.get("data") or [])
+        out = [{"id": p.get("id"), "number": p.get("number", ""), "name": p.get("name", ""),
+                "assistant_id": p.get("assistantId", "")}
+               for p in items if isinstance(p, dict)]
+        return jsonify({"configured": True, "phone_numbers": out})
+    except Exception as e:
+        print(f"[vapi] list numbers failed: {e}")
+        return jsonify({"configured": True, "phone_numbers": [], "error": "Could not list phone numbers."})
+
+
+@vapi_bp.route("/admin/api/vapi/call", methods=["POST"])
+@admin_required
+def vapi_place_call():
+    """Place an OUTBOUND call: dial customer_number from phone_number_id with assistant_id.
+    Logs an outbound voice_calls row; the webhook later fills status/cost/transcript."""
+    g = _require_super_admin_role()
+    if g is not None:
+        return g
+    if not _vapi_configured():
+        return jsonify({"error": "not_configured", "message": "Add VAPI_PRIVATE_KEY to place calls."}), 400
+    body = request.get_json(silent=True) or {}
+    assistant_id = (body.get("assistant_id") or "").strip()
+    phone_number_id = (body.get("phone_number_id") or "").strip()
+    customer = (body.get("customer_number") or "").strip()
+    if not assistant_id or not phone_number_id or not customer:
+        return jsonify({"error": "missing",
+                        "message": "assistant_id, phone_number_id, and customer_number are required."}), 400
+    if not customer.startswith("+"):
+        return jsonify({"error": "bad_number", "message": "Use E.164 format, e.g. +15551234567."}), 400
+    try:
+        res = _vapi_post("/call", {"assistantId": assistant_id, "phoneNumberId": phone_number_id,
+                                   "customer": {"number": customer}})
+        call_id = res.get("id") or "" if isinstance(res, dict) else ""
+        if call_id:
+            try:
+                execute_db(
+                    "INSERT INTO voice_calls (tenant_id, provider, vapi_call_id, assistant_id, call_sid, "
+                    "to_number, direction, status) VALUES (%s,'vapi',%s,%s,%s,%s,'outbound','initiated')",
+                    (current_tenant_id(), call_id, assistant_id, call_id, customer),
+                )
+            except Exception as e:
+                print(f"[vapi] outbound log failed: {e}")
+        return jsonify({"success": True, "call_id": call_id})
+    except Exception as e:
+        capture_exc(e, "vapi.place_call")
+        print(f"[vapi] place call failed: {e}")
+        return jsonify({"error": "call_failed", "message": "Vapi rejected the call request."}), 502
+
+
+@vapi_bp.route("/admin/api/vapi/phone-number", methods=["PATCH"])
+@admin_required
+def vapi_assign_number():
+    """Assign (or clear) an assistant on a phone number for INBOUND calls, via Vapi partial-update."""
+    g = _require_super_admin_role()
+    if g is not None:
+        return g
+    if not _vapi_configured():
+        return jsonify({"error": "not_configured", "message": "Add VAPI_PRIVATE_KEY."}), 400
+    body = request.get_json(silent=True) or {}
+    pid = (body.get("phone_number_id") or "").strip()
+    assistant_id = (body.get("assistant_id") or "").strip()
+    if not pid:
+        return jsonify({"error": "missing", "message": "phone_number_id is required."}), 400
+    try:
+        _vapi_patch("/phone-number/" + pid, {"assistantId": assistant_id or None})
+        return jsonify({"success": True})
+    except Exception as e:
+        capture_exc(e, "vapi.assign_number")
+        print(f"[vapi] assign number failed: {e}")
+        return jsonify({"error": "assign_failed", "message": "Could not update the phone number."}), 502
 
 
 # --- inbound webhook (public; Vapi posts call events here) --------------------
