@@ -539,37 +539,100 @@ function renderPricing() {
  * Renders testimonial/review cards from database data.
  * Each card shows a star rating, quote text, reviewer name/role, and optional photo.
  */
-function renderTestimonials() {
-  const grid = document.getElementById('testimonials-grid');
-  if (!grid || !testimonials.length) return;
+/* =====================================================================
+ * SECTION TEMPLATE REGISTRY (POC) — pluggable display templates per section.
+ * A section's DATA + BEHAVIOR (what /api/page-bundle loads, ordering, visibility)
+ * are unchanged; a "template" only decides HOW that data is displayed. A web dev
+ * adds a layout by registering a renderer here — no DB or data-fetch changes.
+ *
+ * CONTRACT: each renderer is (items) => htmlString. It RECEIVES the section's
+ * already-loaded view-model and RETURNS HTML — it must NEVER fetch data.
+ *   • testimonials items: [{ id, reviewer_name, reviewer_role, content, rating, image_url }]
+ *
+ * The chosen variant per section is stored in page_sections.settings.variant
+ * (Admin → Page Layout → Layout dropdown). Unknown / absent / throwing → 'default'.
+ * ===================================================================== */
+window.SECTION_TEMPLATES = window.SECTION_TEMPLATES || {};
 
-  grid.innerHTML = testimonials.map((t, index) => {
-    /* Build star rating display (filled stars up to rating, empty for the rest) */
-    const stars = Array.from({ length: 5 }, (_, i) =>
-      `<span class="testimonial-star ${i >= t.rating ? 'empty' : ''}" data-testid="star-${t.id}-${i}">★</span>`
-    ).join('');
+/* shared bits so the testimonials templates below stay visually consistent */
+function _tplTestiStars(t) {
+  return Array.from({ length: 5 }, (_, i) =>
+    `<span class="testimonial-star ${i >= t.rating ? 'empty' : ''}" data-testid="star-${t.id}-${i}">★</span>`
+  ).join('');
+}
+function _tplTestiAvatar(t) {
+  return t.image_url
+    ? `<img ${imgAttrs(t.image_url, '80px')} alt="${escapeHtml(t.reviewer_name || '')}" class="testimonial-photo" loading="lazy" data-testid="img-testimonial-${t.id}">`
+    : `<div class="testimonial-photo-placeholder" data-testid="avatar-testimonial-${t.id}">${(t.reviewer_name || '?').charAt(0).toUpperCase()}</div>`;
+}
 
-    /* Optional reviewer photo — show initials circle if no image */
-    const avatar = t.image_url
-      ? `<img ${imgAttrs(t.image_url, '80px')} alt="${escapeHtml(t.reviewer_name || '')}" class="testimonial-photo" loading="lazy" data-testid="img-testimonial-${t.id}">`
-      : `<div class="testimonial-photo-placeholder" data-testid="avatar-testimonial-${t.id}">${(t.reviewer_name || '?').charAt(0).toUpperCase()}</div>`;
-
-    /* role="article" and aria-label with the reviewer name let screen readers
-       announce each testimonial card with the reviewer's identity */
-    return `
+SECTION_TEMPLATES.testimonials = {
+  /* default — the original responsive grid of cards (markup unchanged). */
+  default: function (items) {
+    return items.map((t, index) => `
       <div class="testimonial-card fade-in-view stagger-${(index % 3) + 1}" role="article" aria-label="Testimonial from ${escapeHtml(t.reviewer_name)}" data-testid="card-testimonial-${t.id}">
-        <div class="testimonial-stars" data-testid="rating-testimonial-${t.id}">${stars}</div>
+        <div class="testimonial-stars" data-testid="rating-testimonial-${t.id}">${_tplTestiStars(t)}</div>
         <p class="testimonial-content" data-testid="text-testimonial-${t.id}">"${t.content}"</p>
         <div class="testimonial-reviewer">
-          ${avatar}
+          ${_tplTestiAvatar(t)}
           <div class="testimonial-reviewer-info">
             <span class="testimonial-name" data-testid="name-testimonial-${t.id}">${t.reviewer_name}</span>
             ${t.reviewer_role ? `<span class="testimonial-role" data-testid="role-testimonial-${t.id}">${t.reviewer_role}</span>` : ''}
           </div>
         </div>
       </div>
-    `;
-  }).join('');
+    `).join('');
+  },
+
+  /* carousel — a horizontal, swipeable strip of large quote slides (scroll-snap).
+     Structurally different from the grid: one prominent quote per slide. */
+  carousel: function (items) {
+    const slides = items.map((t) => `
+      <figure class="tpl-testi-slide" role="listitem" data-testid="card-testimonial-${t.id}">
+        <div class="testimonial-stars" data-testid="rating-testimonial-${t.id}">${_tplTestiStars(t)}</div>
+        <blockquote class="tpl-testi-quote" data-testid="text-testimonial-${t.id}">"${t.content}"</blockquote>
+        <figcaption class="tpl-testi-by">
+          ${_tplTestiAvatar(t)}
+          <span><span class="testimonial-name" data-testid="name-testimonial-${t.id}">${t.reviewer_name}</span>${t.reviewer_role ? ` · <span class="testimonial-role" data-testid="role-testimonial-${t.id}">${t.reviewer_role}</span>` : ''}</span>
+        </figcaption>
+      </figure>
+    `).join('');
+    return `<div class="tpl-testi-carousel" role="list" aria-label="Testimonials">${slides}</div>`;
+  },
+};
+
+/* Resolve a section's chosen variant from the loaded pageSections (settings.variant).
+   Fail-safe → 'default' on anything missing/unparseable. */
+function getSectionVariant(slug) {
+  try {
+    const list = (typeof pageSections !== 'undefined' && pageSections) ? pageSections : [];
+    const s = list.find(x => x && x.slug === slug);
+    let st = s && s.settings;
+    if (typeof st === 'string') { try { st = JSON.parse(st); } catch (_e) { st = {}; } }
+    return (st && st.variant) || 'default';
+  } catch (_e) { return 'default'; }
+}
+
+/* Render a section's items through its chosen template, with a HARD fallback to
+   'default' so a bad/throwing template can never blank the section. */
+function renderSectionTemplate(slug, items) {
+  const set = (window.SECTION_TEMPLATES || {})[slug] || {};
+  const fn = set[getSectionVariant(slug)] || set.default;
+  if (typeof fn !== 'function') return '';
+  try { return fn(items || []); }
+  catch (e) { try { return (set.default || function () { return ''; })(items || []); } catch (_e) { return ''; } }
+}
+
+/**
+ * Renders testimonial cards — now via the section template registry, so the layout
+ * (grid / carousel / …) is admin-selectable. The DATA (`testimonials`) and its source
+ * (/api/page-bundle) are unchanged; only the display template differs.
+ */
+function renderTestimonials() {
+  const grid = document.getElementById('testimonials-grid');
+  if (!grid || !testimonials.length) return;
+  grid.setAttribute('data-tpl', getSectionVariant('testimonials'));   // CSS hook for per-variant container styling
+  grid.innerHTML = renderSectionTemplate('testimonials', testimonials);
 }
 
 

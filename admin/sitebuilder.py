@@ -108,6 +108,19 @@ def admin_update_page_section(section_id):
     subtitle = data["subtitle"] if "subtitle" in data else (existing.get("subtitle") or "")
     enabled  = data["enabled"]  if "enabled"  in data else bool(existing.get("enabled"))
     settings = data["settings"] if "settings" in data else (existing.get("settings") or {})
+    # Section template-variant (POC): callers can set just `variant` (the chosen display template
+    # for this section, e.g. 'carousel') without round-tripping the whole settings blob — we merge
+    # it into the settings JSONB so other keys survive. An empty value clears it → the section falls
+    # back to its DEFAULT template on the public site. Additive + backward-compatible: the data the
+    # section pulls and its behavior are untouched; this only records HOW it's displayed.
+    if "variant" in data:
+        if not isinstance(settings, dict):
+            settings = {}
+        _variant = str(data.get("variant") or "").strip()[:40]
+        if _variant:
+            settings = {**settings, "variant": _variant}
+        else:
+            settings = {k: v for k, v in settings.items() if k != "variant"}
     bg_image = data["bg_image"] if "bg_image" in data else (existing.get("bg_image") or "")
     # Per-section SEO overrides (Task #69). Trim and coerce to string;
     # empty strings are allowed and explicitly mean "fall back to the

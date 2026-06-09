@@ -3004,6 +3004,48 @@ body.theme-accent-gradient .section-divider {
   margin: 0 auto;
 }
 
+/* Section-template POC — testimonials "carousel" variant. Active only when Admin sets the
+   testimonials Layout to "Carousel" (renderTestimonials adds [data-tpl="carousel"] on the
+   #testimonials-grid container). The default grid above is untouched. */
+#testimonials-grid[data-tpl="carousel"] {
+  display: block;            /* override the grid so the horizontal strip can span full width */
+  max-width: 72rem;
+  margin: 0 auto;
+}
+.tpl-testi-carousel {
+  display: flex;
+  gap: var(--space-lg);
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  padding: 0.5rem 0.25rem 1.25rem;
+  scrollbar-width: thin;
+}
+.tpl-testi-slide {
+  flex: 0 0 min(82%, 460px);
+  scroll-snap-align: center;
+  margin: 0;
+  padding: var(--space-lg);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.tpl-testi-quote {
+  margin: 0;
+  font-size: 1.25rem;
+  line-height: 1.55;
+  font-style: italic;
+}
+.tpl-testi-by {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: auto;
+}
+
 .testimonial-card {
   padding: var(--space-lg);
   border-radius: 0.375rem;

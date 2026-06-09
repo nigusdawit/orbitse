@@ -5290,6 +5290,17 @@
       'events', 'rsvp_form', 'video_gallery', 'podcast', 'products', 'services'
     ]);
 
+    // POC — per-section layout variants. The actual RENDERERS live in the PUBLIC site registry
+    // (public/script.js → SECTION_TEMPLATES); these are just the {key,label} pairs the admin
+    // "Layout" dropdown offers, keyed by section slug. Keep the keys in sync with that registry.
+    // (Production: serve this manifest from one endpoint so adding a template is a single edit.)
+    const SECTION_LAYOUTS = {
+      testimonials: [
+        { key: 'default',  label: 'Grid (classic)' },
+        { key: 'carousel', label: 'Carousel' },
+      ],
+    };
+
     async function loadPageSections() {
       try {
         const res = await fetch('/admin/api/page-sections');
@@ -5297,7 +5308,7 @@
         const tbody = document.getElementById('page-sections-tbody');
 
         if (!sections.length) {
-          tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No sections found.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No sections found.</td></tr>';
           return;
         }
 
@@ -5308,6 +5319,22 @@
             : `<span class="badge" style="background:rgba(139,92,246,0.15); color:#c4b5fd; border-color:rgba(139,92,246,0.3);">${esc(TEMPLATE_LABELS[s.template] || s.template)}</span>`;
 
           const toggleChecked = s.enabled ? 'checked' : '';
+
+          // Layout (template variant) picker — shown only for sections that have registered
+          // variants (SECTION_LAYOUTS). Reads the current choice from settings.variant; saving
+          // sends just {variant} to the section PUT. Sections without variants show a dash.
+          let layoutCell = '<span style="color:var(--admin-text-muted);">&mdash;</span>';
+          const _lopts = SECTION_LAYOUTS[s.slug];
+          if (_lopts) {
+            let _cur = 'default';
+            try {
+              const _st = (typeof s.settings === 'string') ? JSON.parse(s.settings) : (s.settings || {});
+              _cur = (_st && _st.variant) || 'default';
+            } catch (_e) { _cur = 'default'; }
+            layoutCell = `<select class="form-select" style="padding:0.25rem 0.4rem; font-size:0.8rem;" onchange="setSectionLayout(${s.id}, this.value)" data-testid="select-section-layout-${s.id}">`
+              + _lopts.map(o => `<option value="${esc(o.key)}" ${o.key === _cur ? 'selected' : ''}>${esc(o.label)}</option>`).join('')
+              + '</select>';
+          }
 
           // Background cell: thumbnail (or empty placeholder) + Upload + Clear.
           // The hero section is special — its background image is managed on
@@ -5349,6 +5376,7 @@
               <td><span class="drag-handle" title="Drag to reorder">&#x2630;</span></td>
               <td><strong>${esc(s.title)}</strong> <span style="color:var(--admin-text-muted); font-size:0.75rem; margin-left:0.5rem;">${esc(s.slug)}</span></td>
               <td>${typeBadge}</td>
+              <td class="cell-section-layout">${layoutCell}</td>
               <td class="cell-section-bg">${bgCell}</td>
               <td>
                 <label class="toggle-switch" data-testid="toggle-section-${s.id}">
@@ -5365,6 +5393,20 @@
       } catch (err) {
         showToast('Failed to load page sections', 'error');
       }
+    }
+
+    // Save a section's chosen layout variant. Sends just {variant}; the section PUT merges it into
+    // settings JSONB (other settings preserved). 'default' clears the override (the public site
+    // falls back to the section's default template). DB data + behavior are untouched.
+    async function setSectionLayout(id, variant) {
+      try {
+        const res = await fetch(`/admin/api/page-sections/${id}`, {
+          method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ variant: variant === 'default' ? '' : variant }),
+        });
+        if (res.ok) showToast('Layout saved — reload the public site to see it');
+        else showToast('Could not update layout', 'error');
+      } catch (e) { showToast('Could not update layout', 'error'); }
     }
 
     function autoGenerateSectionSlug() {
