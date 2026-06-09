@@ -129,10 +129,11 @@
 .aap-voice-body button.aap-voice-end { background: rgba(255, 255, 255, 0.08); color: var(--aap-text); border: 1px solid var(--aap-border); }
 .aap-voice-phone { display: flex; flex-direction: column; gap: 8px; }
 .aap-voice-phone .aap-voice-plabel { font-size: 13px; opacity: 0.85; }
-.aap-voice-phone .aap-voice-num {
+.aap-voice-phone .aap-voice-num, .aap-voice-phone .aap-voice-code {
   background: rgba(255, 255, 255, 0.05); border: 1px solid var(--aap-border);
   border-radius: 10px; padding: 10px 12px; color: var(--aap-text); outline: none; font-size: 14px;
 }
+.aap-voice-phone .aap-voice-code { letter-spacing: 0.25em; text-align: center; }
 /* honeypot — visually removed, kept in the a11y tree off-screen for bots to fill */
 .aap-voice-phone .aap-voice-hp { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; }
 .aap-voice-note { font-size: 11px; opacity: 0.55; }

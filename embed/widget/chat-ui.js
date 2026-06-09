@@ -624,11 +624,22 @@
       num.placeholder = "+1 555 123 4567"; num.setAttribute("autocomplete", "tel");
       var hp = document.createElement("input"); hp.type = "text"; hp.className = "aap-voice-hp";
       hp.setAttribute("tabindex", "-1"); hp.setAttribute("autocomplete", "off"); hp.setAttribute("aria-hidden", "true");
-      var cbtn = document.createElement("button"); cbtn.className = "aap-voice-call"; cbtn.textContent = "📞  Call me";
-      pwrap.appendChild(plabel); pwrap.appendChild(num); pwrap.appendChild(hp); pwrap.appendChild(cbtn);
+      // OTP code field — hidden until a code has been sent (only used when otp_required)
+      var codeEl = document.createElement("input"); codeEl.type = "text"; codeEl.className = "aap-voice-code";
+      codeEl.placeholder = "6-digit code"; codeEl.setAttribute("inputmode", "numeric"); codeEl.maxLength = 6;
+      codeEl.style.display = "none";
+      var cbtn = document.createElement("button"); cbtn.className = "aap-voice-call";
+      cbtn.textContent = w.otp_required ? "Send code" : "📞  Call me";
+      pwrap.appendChild(plabel); pwrap.appendChild(num); pwrap.appendChild(hp); pwrap.appendChild(codeEl); pwrap.appendChild(cbtn);
       body.appendChild(pwrap);
-      cbtn.addEventListener("click", function () { requestCallback(num, hp, cbtn); });
-      num.addEventListener("keydown", function (e) { if (e.key === "Enter") requestCallback(num, hp, cbtn); });
+      S._voiceOtpSent = false;
+      var phoneAction = function () {
+        if (w.otp_required && !S._voiceOtpSent) sendOtp(num, hp, codeEl, cbtn);
+        else requestCallback(num, hp, codeEl, cbtn);
+      };
+      cbtn.addEventListener("click", phoneAction);
+      num.addEventListener("keydown", function (e) { if (e.key === "Enter") phoneAction(); });
+      codeEl.addEventListener("keydown", function (e) { if (e.key === "Enter") requestCallback(num, hp, codeEl, cbtn); });
     }
 
     var note = document.createElement("div"); note.className = "aap-voice-note";
@@ -680,21 +691,47 @@
     _voiceToggleInCall(false);
   }
 
-  function requestCallback(numEl, hpEl, btn) {
+  function sendOtp(numEl, hpEl, codeEl, btn) {
     var phone = ((numEl && numEl.value) || "").trim();
     if (!phone) { _vstatus("Enter your phone number first.", "err"); return; }
+    _vstatus("Texting you a code…");
+    if (btn) btn.disabled = true;
+    fetch(api("/api/voice/otp"), {
+      method: "POST", headers: hdrs({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ phone: phone, _hp: (hpEl && hpEl.value) || "" }),
+    }).then(function (r) { return r.json().catch(function () { return {}; }); })
+      .then(function (d) {
+        if (d && d.ok && d.sent) {
+          S._voiceOtpSent = true;
+          if (codeEl) { codeEl.style.display = ""; codeEl.focus(); }
+          if (btn) btn.textContent = "📞  Verify & call";
+          _vstatus("Enter the 6-digit code we just texted you.", "ok");
+        } else { _vstatus((d && d.message) || "Couldn't send a code right now.", "err"); }
+      }).catch(function () { _vstatus("Network error — please try again.", "err"); })
+      .then(function () { if (btn) btn.disabled = false; });
+  }
+
+  function requestCallback(numEl, hpEl, codeEl, btn) {
+    var phone = ((numEl && numEl.value) || "").trim();
+    if (!phone) { _vstatus("Enter your phone number first.", "err"); return; }
+    var code = ((codeEl && codeEl.value) || "").trim();
     _vstatus("Requesting your call…");
     if (btn) btn.disabled = true;
     fetch(api("/api/voice/callback"), {
       method: "POST", headers: hdrs({ "Content-Type": "application/json" }),
       body: JSON.stringify({
-        phone: phone, _hp: (hpEl && hpEl.value) || "",
+        phone: phone, code: code, _hp: (hpEl && hpEl.value) || "",
         session_id: S.sessionId, visitor_id: S.visitorId, page_url: location.href,
       }),
     }).then(function (r) { return r.json().catch(function () { return {}; }); })
       .then(function (d) {
-        if (d && d.ok) { _vstatus(d.message || "Calling you now — please answer your phone.", "ok"); if (numEl) numEl.value = ""; }
-        else { _vstatus((d && d.message) || "We couldn't place the call right now.", "err"); }
+        if (d && d.ok) {
+          _vstatus(d.message || "Calling you now — please answer your phone.", "ok");
+          if (numEl) numEl.value = "";
+          if (codeEl) { codeEl.value = ""; codeEl.style.display = "none"; }
+          S._voiceOtpSent = false;
+          if (btn) btn.textContent = (S.webVoice && S.webVoice.otp_required) ? "Send code" : "📞  Call me";
+        } else { _vstatus((d && d.message) || "We couldn't place the call right now.", "err"); }
       }).catch(function () { _vstatus("Network error — please try again.", "err"); })
       .then(function () { if (btn) btn.disabled = false; });
   }

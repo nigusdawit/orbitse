@@ -7652,6 +7652,7 @@
         const d = await (await fetch('/admin/api/vapi/web-voice', { credentials: 'same-origin' })).json();
         const setV = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
         const en = document.getElementById('wv-enabled'); if (en) en.checked = !!d.enabled;
+        const otp = document.getElementById('wv-otp'); if (otp) otp.checked = d.otp_required !== false;
         setV('wv-mode', d.mode || 'both');
         setV('wv-label', d.button_label || 'Talk to us');
         setV('wv-cap', (d.daily_call_cap != null ? d.daily_call_cap : 50));
@@ -7669,6 +7670,7 @@
         phone_number_id: val('wv-number'),
         button_label: (val('wv-label') || '').trim(),
         daily_call_cap: parseInt(val('wv-cap'), 10),
+        otp_required: !!((document.getElementById('wv-otp') || {}).checked),
       };
       const restore = setButtonBusy(btn, 'Saving…');
       try {

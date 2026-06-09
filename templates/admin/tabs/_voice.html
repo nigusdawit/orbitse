@@ -147,6 +147,9 @@
           <label class="vp-muted" style="min-width:150px;">Max phone callbacks / day</label>
           <input type="number" id="wv-cap" min="0" max="1000" placeholder="50" style="width:110px; padding:0.4rem 0.6rem; border:1px solid var(--admin-border); border-radius:8px; background:var(--admin-input-bg, transparent); color:var(--admin-text);">
         </div>
+        <label style="display:block; margin:0.6rem 0 0.2rem;">
+          <input type="checkbox" id="wv-otp" data-testid="checkbox-wv-otp"> Require SMS verification before calling <span class="vp-muted">(recommended — stops people entering someone else's number; needs Twilio SMS configured)</span>
+        </label>
         <div class="vp-row" style="margin-top:0.6rem;">
           <button class="btn btn-primary btn-sm" onclick="vapiSaveWebVoice(this)" data-testid="button-wv-save">Save voice button</button>
           <span id="wv-result" class="vp-muted"></span>

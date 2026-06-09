@@ -37,9 +37,21 @@ def _clear_requests():
     app.execute_db("DELETE FROM web_call_requests")
 
 
-def _enable_phone(cap=50):
+def _enable_phone(cap=50, otp=False):
+    # default otp=False so the direct-dial guardrail tests below exercise the no-OTP path
     vapi_mod._web_voice_save({"enabled": True, "mode": "both", "assistant_id": "asst_x",
-                              "phone_number_id": "pn_x", "button_label": "Talk to us", "daily_call_cap": cap})
+                              "phone_number_id": "pn_x", "button_label": "Talk to us",
+                              "daily_call_cap": cap, "otp_required": otp})
+
+
+def _sms_env(on):
+    if on:
+        os.environ["TWILIO_ACCOUNT_SID"] = "ac"
+        os.environ["TWILIO_AUTH_TOKEN"] = "tok"
+        os.environ["TWILIO_FROM_NUMBER"] = "+15550000000"
+    else:
+        for k in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER"):
+            os.environ.pop(k, None)
 
 
 # ---- E.164 normalization (unit) --------------------------------------------
@@ -220,4 +232,95 @@ def test_callback_global_daily_cap():
         os.environ.pop("OUTBOUND_CALLING_ENABLED", None)
         os.environ.pop("VAPI_PRIVATE_KEY", None)
         _clear_requests()
+        _reset_webvoice()
+
+
+# ---- OTP (SMS verification before we dial) ----------------------------------
+
+def test_otp_send_texts_code_and_logs():
+    phone = "+15558880001"
+    app.execute_db("DELETE FROM web_call_otps WHERE phone=%s", (phone,))
+    vapi_mod._web_voice_save({"enabled": True, "mode": "both", "assistant_id": "a",
+                              "phone_number_id": "n", "otp_required": True})
+    os.environ["OUTBOUND_CALLING_ENABLED"] = "1"
+    _sms_env(True)
+    sent = {}
+    orig = vapi_mod.messaging.send_sms
+    vapi_mod.messaging.send_sms = lambda to, b, **kw: (sent.update({"to": to, "body": b}) or {"sid": "SM1"})
+    try:
+        r = app.app.test_client().post("/api/voice/otp", json={"phone": phone})
+        assert r.status_code == 200 and r.get_json().get("sent") is True
+        assert sent["to"] == phone and "code" in sent["body"].lower()
+        # a hashed code row is stored (never plaintext)
+        row = app.query_db("SELECT code_hash FROM web_call_otps WHERE phone=%s", (phone,), fetchone=True)
+        assert row and row["code_hash"] and len(row["code_hash"]) >= 40
+    finally:
+        vapi_mod.messaging.send_sms = orig
+        os.environ.pop("OUTBOUND_CALLING_ENABLED", None)
+        _sms_env(False)
+        app.execute_db("DELETE FROM web_call_otps WHERE phone=%s", (phone,))
+        _reset_webvoice()
+
+
+def test_otp_send_unavailable_without_sms():
+    vapi_mod._web_voice_save({"enabled": True, "mode": "both", "assistant_id": "a",
+                              "phone_number_id": "n", "otp_required": True})
+    os.environ["OUTBOUND_CALLING_ENABLED"] = "1"
+    _sms_env(False)
+    try:
+        r = app.app.test_client().post("/api/voice/otp", json={"phone": "+15558880002"})
+        assert r.status_code == 503
+    finally:
+        os.environ.pop("OUTBOUND_CALLING_ENABLED", None)
+        _reset_webvoice()
+
+
+def test_web_config_phone_hidden_when_otp_without_sms():
+    vapi_mod._web_voice_save({"enabled": True, "mode": "phone", "assistant_id": "a",
+                              "phone_number_id": "n", "otp_required": True})
+    os.environ["OUTBOUND_CALLING_ENABLED"] = "1"
+    os.environ["VAPI_PRIVATE_KEY"] = "vp"
+    _sms_env(False)
+    try:
+        d = app.app.test_client().get("/api/voice/web-config").get_json()
+        assert d["enabled"] is True and d["phone"] is False and d["otp_required"] is True
+    finally:
+        os.environ.pop("OUTBOUND_CALLING_ENABLED", None)
+        os.environ.pop("VAPI_PRIVATE_KEY", None)
+        _reset_webvoice()
+
+
+def test_callback_requires_valid_code_when_otp_on():
+    _clear_requests()
+    phone = "+15558880003"
+    app.execute_db("DELETE FROM web_call_otps WHERE phone=%s", (phone,))
+    vapi_mod._web_voice_save({"enabled": True, "mode": "both", "assistant_id": "a",
+                              "phone_number_id": "n", "otp_required": True})
+    os.environ["OUTBOUND_CALLING_ENABLED"] = "1"
+    os.environ["VAPI_PRIVATE_KEY"] = "vp"
+    _sms_env(True)
+    called = {"n": 0}
+    orig = vapi_mod._vapi_post
+    vapi_mod._vapi_post = lambda p, b: (called.update({"n": called["n"] + 1}) or {"id": "vc_otp_1"})
+    try:
+        # no code → refused, nobody dialed
+        r1 = app.app.test_client().post("/api/voice/callback", json={"phone": phone})
+        assert r1.status_code == 400 and r1.get_json()["error"] == "bad_code" and called["n"] == 0
+        # seed a known, unexpired code → the matching call goes through
+        app.execute_db("INSERT INTO web_call_otps (tenant_id, phone, ip, code_hash, expires_at) "
+                       "VALUES (1,%s,'1.1.1.1',%s, NOW() + INTERVAL '10 minutes')",
+                       (phone, vapi_mod._otp_hash("123456", phone)))
+        r2 = app.app.test_client().post("/api/voice/callback", json={"phone": phone, "code": "123456"})
+        assert r2.status_code == 200 and r2.get_json()["ok"] is True and called["n"] == 1
+        # the code is single-use (now verified) → replay is rejected
+        r3 = app.app.test_client().post("/api/voice/callback", json={"phone": phone, "code": "123456"})
+        assert r3.status_code == 400
+    finally:
+        vapi_mod._vapi_post = orig
+        os.environ.pop("OUTBOUND_CALLING_ENABLED", None)
+        os.environ.pop("VAPI_PRIVATE_KEY", None)
+        _sms_env(False)
+        app.execute_db("DELETE FROM web_call_otps WHERE phone=%s", (phone,))
+        app.execute_db("DELETE FROM web_call_requests WHERE phone=%s", (phone,))
+        app.execute_db("DELETE FROM voice_calls WHERE vapi_call_id='vc_otp_1'")
         _reset_webvoice()

@@ -14,10 +14,14 @@ Twilio <Stream> bridge deferred. This slice wires:
 Registered in app.py via app.register_blueprint(vapi_bp). The /webhooks prefix is already
 CSRF-exempt + un-gated, so the webhook is reachable by Vapi's servers.
 """
+import hashlib
 import hmac
 import json
 import os
+import secrets
 from datetime import datetime
+
+import messaging
 
 try:
     from zoneinfo import ZoneInfo
@@ -366,10 +370,52 @@ def vapi_compliance_save():
 # visitor metadata. We never expose the private key or the phone_number_id to the browser.
 
 _WEB_VOICE_DEFAULTS = {"enabled": False, "mode": "both", "assistant_id": "",
-                       "phone_number_id": "", "button_label": "Talk to us", "daily_call_cap": 50}
+                       "phone_number_id": "", "button_label": "Talk to us", "daily_call_cap": 50,
+                       "otp_required": True}
 _WEB_VOICE_MODES = ("browser", "phone", "both")
 _WEB_CALL_PER_IP_HOUR = 3       # max callbacks one IP can request per hour (best-effort; IP isn't trusted)
 _WEB_CALL_PER_PHONE_DAY = 2     # max callbacks to a single number per day (anti-harassment — the real cap)
+_OTP_PER_PHONE_HOUR = 3         # max OTP texts to a single number per hour (anti SMS-bombing — the real cap)
+_OTP_PER_IP_HOUR = 5            # max OTP requests per IP per hour (best-effort)
+_OTP_TTL_MINUTES = 10           # how long a code stays valid
+_OTP_MAX_ATTEMPTS = 5           # wrong-code guesses before a code is burned
+
+
+def _sms_configured():
+    """True only if Twilio is wired (OTP can't be sent otherwise). Mirrors messaging.send_sms's own
+    requirements so we fail CLOSED — never offer phone callbacks that silently can't verify."""
+    return bool((os.environ.get("TWILIO_ACCOUNT_SID") or "").strip()
+                and (os.environ.get("TWILIO_AUTH_TOKEN") or "").strip()
+                and (os.environ.get("TWILIO_FROM_NUMBER") or "").strip())
+
+
+def _otp_hash(code, phone):
+    """Hash an OTP bound to its phone (codes are never stored in plaintext)."""
+    return hashlib.sha256((str(code) + "|" + str(phone)).encode("utf-8")).hexdigest()
+
+
+def _otp_verify(phone, code):
+    """Consume the latest unexpired OTP for `phone`: True iff `code` matches within the attempt
+    limit. Marks it verified on success, increments attempts on failure. Constant-time + fail-CLOSED."""
+    code = "".join(ch for ch in str(code or "") if ch.isdigit())
+    if len(code) != 6:
+        return False
+    try:
+        row = query_db("SELECT id, code_hash, attempts FROM web_call_otps WHERE phone=%s "
+                       "AND verified=FALSE AND expires_at > NOW() ORDER BY id DESC LIMIT 1",
+                       (phone,), fetchone=True)
+        if not isinstance(row, dict):
+            return False
+        if int(row.get("attempts") or 0) >= _OTP_MAX_ATTEMPTS:
+            return False
+        if hmac.compare_digest(str(row.get("code_hash") or ""), _otp_hash(code, phone)):
+            execute_db("UPDATE web_call_otps SET verified=TRUE WHERE id=%s", (row["id"],))
+            return True
+        execute_db("UPDATE web_call_otps SET attempts=attempts+1 WHERE id=%s", (row["id"],))
+        return False
+    except Exception as e:
+        capture_exc(e, "vapi.otp_verify")
+        return False
 
 
 def _normalize_e164(raw):
@@ -398,6 +444,8 @@ def _web_voice_get():
             out["assistant_id"] = str(blob.get("assistant_id") or "")[:120]
             out["phone_number_id"] = str(blob.get("phone_number_id") or "")[:120]
             out["button_label"] = (str(blob.get("button_label") or "").strip()[:60]) or "Talk to us"
+            if "otp_required" in blob:
+                out["otp_required"] = bool(blob.get("otp_required"))
             try:
                 out["daily_call_cap"] = max(0, min(int(blob.get("daily_call_cap", 50)), 1000))
             except (TypeError, ValueError):
@@ -413,7 +461,8 @@ def _web_voice_save(blob):
              "mode": m if m in _WEB_VOICE_MODES else "both",
              "assistant_id": str(blob.get("assistant_id") or "")[:120],
              "phone_number_id": str(blob.get("phone_number_id") or "")[:120],
-             "button_label": (str(blob.get("button_label") or "").strip()[:60]) or "Talk to us"}
+             "button_label": (str(blob.get("button_label") or "").strip()[:60]) or "Talk to us",
+             "otp_required": bool(blob.get("otp_required", True))}
     try:
         clean["daily_call_cap"] = max(0, min(int(blob.get("daily_call_cap", 50)), 1000))
     except (TypeError, ValueError):
@@ -454,15 +503,71 @@ def vapi_web_voice_config():
     if out["browser"]:
         out["public_key"] = pk
         out["assistant_id"] = cfg["assistant_id"]
-    out["phone"] = bool(cfg["mode"] in ("phone", "both") and _outbound_enabled()
-                        and _vapi_configured() and cfg["phone_number_id"] and cfg["assistant_id"])
+    phone_ok = bool(cfg["mode"] in ("phone", "both") and _outbound_enabled()
+                    and _vapi_configured() and cfg["phone_number_id"] and cfg["assistant_id"])
+    if phone_ok and cfg["otp_required"] and not _sms_configured():
+        phone_ok = False   # OTP required but no SMS channel to send it → don't offer phone mode
+    out["phone"] = phone_ok
+    out["otp_required"] = bool(cfg["otp_required"])
     return jsonify(out)
+
+
+@vapi_bp.route("/api/voice/otp", methods=["POST"])
+def vapi_web_voice_otp():
+    """PUBLIC: text a one-time code to the visitor's number so we can prove they own it before we
+    dial. Guarded: honeypot -> enable+phone+otp_required -> OUTBOUND -> SMS configured -> E.164 ->
+    per-phone / per-IP send limits (fail CLOSED). Only ever returns whether a code was 'sent'."""
+    body = request.get_json(silent=True) or {}
+    if (str(body.get("_hp") or "")).strip():
+        return jsonify({"ok": True, "sent": True})   # honeypot → look successful, text nobody
+    cfg = _web_voice_get()
+    if not (cfg["enabled"] and cfg["mode"] in ("phone", "both") and cfg["otp_required"]):
+        return jsonify({"ok": False, "error": "unavailable"}), 404
+    if not _outbound_enabled():
+        return jsonify({"ok": False, "error": "unavailable"}), 503
+    if not _sms_configured():
+        return jsonify({"ok": False, "error": "unavailable",
+                        "message": "Verification isn't available right now."}), 503
+    phone = _normalize_e164(body.get("phone") or "")
+    if not phone:
+        return jsonify({"ok": False, "error": "bad_number",
+                        "message": "Enter your number in international format, e.g. +15551234567."}), 400
+    ip = (request.remote_addr or "unknown")[:45]
+    try:
+        n_phone = (query_db("SELECT COUNT(*) AS n FROM web_call_otps WHERE phone=%s "
+                            "AND created_at >= NOW() - INTERVAL '1 hour'", (phone,), fetchone=True) or {}).get("n", 0)
+        n_ip = (query_db("SELECT COUNT(*) AS n FROM web_call_otps WHERE ip=%s "
+                         "AND created_at >= NOW() - INTERVAL '1 hour'", (ip,), fetchone=True) or {}).get("n", 0)
+        if n_phone >= _OTP_PER_PHONE_HOUR or n_ip >= _OTP_PER_IP_HOUR:
+            return jsonify({"ok": False, "error": "rate_limited",
+                            "message": "Too many code requests — please try again later."}), 429
+    except Exception as e:
+        capture_exc(e, "vapi.otp.ratelimit")
+        return jsonify({"ok": False, "error": "unavailable"}), 503
+    code = "%06d" % secrets.randbelow(1000000)
+    try:
+        execute_db("INSERT INTO web_call_otps (tenant_id, phone, ip, code_hash, expires_at) "
+                   "VALUES (%s,%s,%s,%s, NOW() + %s * INTERVAL '1 minute')",
+                   (current_tenant_id(), phone, ip, _otp_hash(code, phone), _OTP_TTL_MINUTES))
+    except Exception as e:
+        capture_exc(e, "vapi.otp.store")
+        return jsonify({"ok": False, "error": "unavailable"}), 503
+    try:
+        messaging.send_sms(phone, "Your verification code is %s. It expires in %d minutes."
+                           % (code, _OTP_TTL_MINUTES))
+    except Exception as e:
+        capture_exc(e, "vapi.otp.send")
+        print(f"[vapi] otp sms failed: {e}")
+        return jsonify({"ok": False, "error": "send_failed",
+                        "message": "We couldn't text that number. Check it and try again."}), 502
+    return jsonify({"ok": True, "sent": True})
 
 
 @vapi_bp.route("/api/voice/callback", methods=["POST"])
 def vapi_web_voice_callback():
     """PUBLIC: a visitor asks us to call their phone. Anonymous-triggered outbound → fully guarded
-    (see the section header). Returns {ok} without ever echoing the number back."""
+    (see the section header). When otp_required, a verified SMS code is required first. Returns {ok}
+    without ever echoing the number back."""
     body = request.get_json(silent=True) or {}
     if (str(body.get("_hp") or "")).strip():
         return jsonify({"ok": True})   # honeypot tripped → look successful, dial nobody
@@ -478,6 +583,14 @@ def vapi_web_voice_callback():
     if not phone:
         return jsonify({"ok": False, "error": "bad_number",
                         "message": "Enter your number in international format, e.g. +15551234567."}), 400
+    # Proof-of-ownership: an OTP we texted must be verified before we dial. Fail CLOSED — if OTP is
+    # required but SMS isn't wired we refuse rather than dial unverified.
+    if cfg["otp_required"]:
+        if not _sms_configured():
+            return jsonify({"ok": False, "error": "unavailable"}), 503
+        if not _otp_verify(phone, body.get("code")):
+            return jsonify({"ok": False, "error": "bad_code",
+                            "message": "That code didn't match or expired. Request a new one."}), 400
     ip = (request.remote_addr or "unknown")[:45]   # XFF deliberately not trusted (see app._client_ip)
     # Rate limits — the limiter FAILS CLOSED: a DB hiccup must never open the auto-dialer.
     try:

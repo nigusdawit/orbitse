@@ -523,6 +523,7 @@ POST /api/vapi/llm/chat/completions
 POST /api/velo/refresh-registration
 POST /api/voice/callback
 POST /api/voice/log
+POST /api/voice/otp
 POST /api/voice/sample
 POST /api/voice/stt
 POST /api/voice/tts
