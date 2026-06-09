@@ -513,6 +513,7 @@ POST /api/services/<string:slug>/booking-partial
 POST /api/stripe/webhook
 POST /api/track/duration
 POST /api/track/pageview
+POST /api/vapi/llm/chat/completions
 POST /api/velo/refresh-registration
 POST /api/voice/log
 POST /api/voice/sample

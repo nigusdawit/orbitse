@@ -51,6 +51,13 @@
           <button class="btn btn-secondary btn-sm" onclick="vapiCopyWebhook(this)">Copy</button>
         </div>
       </div>
+      <div style="margin-top:0.85rem;">
+        <label class="vp-muted">Concierge brain URL — for a <code>custom-llm</code> assistant, set this as the model URL (auth: <code>Bearer</code> your <code>VAPI_LLM_SECRET</code>). The assistant then talks as your concierge.</label>
+        <div class="vp-row">
+          <input type="text" id="vapi-llm-url" readonly onclick="this.select()" data-testid="text-vapi-llm-url">
+          <button class="btn btn-secondary btn-sm" onclick="vapiCopyLlm(this)">Copy</button>
+        </div>
+      </div>
 
       <hr style="border:none; border-top:1px solid var(--admin-border); margin:1.1rem 0;">
       <div class="vp-row" style="justify-content:space-between;">

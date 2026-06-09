@@ -93,6 +93,8 @@ def vapi_status():
         "configured": _vapi_configured(),
         "public_key_set": bool(_vapi_public_key()),
         "webhook_secret_set": bool(_vapi_webhook_secret()),
+        "llm_secret_set": bool((os.environ.get("VAPI_LLM_SECRET")
+                                or os.environ.get("VAPI_WEBHOOK_SECRET") or "").strip()),
     })
 
 

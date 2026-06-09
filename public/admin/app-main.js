@@ -7407,12 +7407,15 @@
       if (!el) return;
       const urlEl = document.getElementById('vapi-webhook-url');
       if (urlEl) urlEl.value = window.location.origin + '/webhooks/vapi';
+      const llmEl = document.getElementById('vapi-llm-url');
+      if (llmEl) llmEl.value = window.location.origin + '/api/vapi/llm';
       try {
         const d = await (await fetch('/admin/api/vapi/status', { credentials: 'same-origin' })).json();
         const badge = d.configured ? '<span class="vp-badge ok">key set</span>' : '<span class="vp-badge off">no key</span>';
         const extras = [
           d.public_key_set ? 'web SDK key ✓' : 'web SDK key ✗',
           d.webhook_secret_set ? 'webhook secret ✓' : 'webhook secret ✗',
+          d.llm_secret_set ? 'custom-LLM secret ✓' : 'custom-LLM secret ✗',
         ];
         el.innerHTML = 'Private key: ' + badge + ' &nbsp; <span class="vp-muted">' + extras.join(' · ') + '</span>';
       } catch (e) { el.textContent = 'Could not load Vapi status.'; }
@@ -7439,6 +7442,14 @@
 
     function vapiCopyWebhook(btn) {
       const inp = document.getElementById('vapi-webhook-url');
+      if (!inp) return;
+      inp.select();
+      try { navigator.clipboard.writeText(inp.value); showToast('Copied'); }
+      catch (e) { try { document.execCommand('copy'); showToast('Copied'); } catch (_) {} }
+    }
+
+    function vapiCopyLlm(btn) {
+      const inp = document.getElementById('vapi-llm-url');
       if (!inp) return;
       inp.select();
       try { navigator.clipboard.writeText(inp.value); showToast('Copied'); }

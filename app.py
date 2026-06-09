@@ -21930,7 +21930,7 @@ def admin_chat_session_branch(session_id):
         return jsonify({"error": "source session not found"}), 404
     data = request.get_json(silent=True) or {}
     up_to = data.get("up_to_message_id")
-    new_sid = "admin_" + os.urandom(6).hex() + str(int(time.time()))[-6:]
+    new_sid = "admin_" + os.urandom(6).hex() + str(int(_time.time()))[-6:]
     base_title = (src.get("title") or "Conversation").strip()
     new_title = ("↳ " + base_title)[:200]
     # Seed the new session row with the SAME overrides as the source so
@@ -24915,6 +24915,170 @@ def api_chat():
             'X-Accel-Buffering': 'no',
         }
     )
+
+
+# =============================================================================
+# VAPI custom-LLM bridge (slice 3) — OpenAI-compatible /v1/chat/completions that
+# answers VOICE calls AS the visitor concierge: same base prompt, brand voice,
+# scope/safety/escalation knobs, and KB knowledge as the website chat. A Vapi
+# assistant with model.provider="custom-llm" + url=<host>/api/vapi/llm points
+# here (Vapi appends /chat/completions). REUSES the concierge building blocks
+# (get_prompt, _compose_* paragraphs, lookup_knowledge_base, _stream_round_*)
+# without touching api_chat. The agentic tool loop is NOT run here — business
+# actions are exposed to Vapi as webhook tools in slice 4.
+#
+# SECURITY: this proxies your PAID LLM, so it is FAIL-CLOSED — it requires a
+# bearer secret (VAPI_LLM_SECRET, or VAPI_WEBHOOK_SECRET) which the operator sets
+# as the assistant's custom-LLM auth. With no secret configured it returns 503;
+# it is never an open LLM proxy.
+# =============================================================================
+
+def _vapi_llm_secret():
+    return (os.environ.get("VAPI_LLM_SECRET") or os.environ.get("VAPI_WEBHOOK_SECRET") or "").strip()
+
+
+def _vapi_llm_voice_note():
+    return (
+        "\n\nVOICE MODE: You are on a live phone/voice call, not a web chat. Keep replies short "
+        "and conversational — usually 1–3 sentences. Do NOT use markdown, bullet lists, emoji, "
+        "URLs, or code; say things the way a person speaks them. Ask one question at a time. If "
+        "you can't help confidently, say so briefly and offer to connect a human.\n"
+    )
+
+
+def _vapi_llm_system_prompt(last_user_text):
+    """Assemble the concierge system prompt for a voice turn — mirrors api_chat's base prompt +
+    brand voice + scope/safety/escalation, plus compact KB context for the turn + a voice note."""
+    try:
+        base = get_prompt("visitor_system", SYSTEM_PROMPT)
+    except Exception:
+        base = ""
+    parts = [base or ""]
+    try:
+        cs = query_db("SELECT brand_voice FROM chatbot_settings WHERE id = 1", fetchone=True)
+        bv = (cs.get("brand_voice") or "").strip() if isinstance(cs, dict) else ""
+        if bv:
+            parts.append("\n\nBRAND VOICE: " + bv + "\n")
+    except Exception:
+        pass
+    for fn in (_compose_scope_paragraph, _compose_safety_paragraph, _compose_escalation_paragraph):
+        try:
+            p = fn()
+            if p:
+                parts.append(p)
+        except Exception:
+            pass
+    try:
+        if last_user_text:
+            chunks = lookup_knowledge_base(query=last_user_text, limit=3) or []
+            if chunks:
+                ctx = "\n".join(
+                    "- [" + str(c.get("source") or "doc") + "] " + str(c.get("content") or "")[:700]
+                    for c in chunks
+                )
+                parts.append("\n\nRELEVANT KNOWLEDGE (use if helpful; cite the source):\n" + ctx + "\n")
+    except Exception as e:
+        print(f"[vapi_llm] kb lookup failed: {e}")
+    parts.append(_vapi_llm_voice_note())
+    return "".join(parts)
+
+
+def _vapi_llm_chunk(cid, created, model, delta, finish):
+    return "data: " + json.dumps({
+        "id": cid, "object": "chat.completion.chunk", "created": created, "model": model,
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+    }) + "\n\n"
+
+
+@app.route("/api/vapi/llm/chat/completions", methods=["POST"])
+def vapi_llm_completions():
+    """OpenAI-compatible chat-completions for Vapi custom-LLM (the concierge brain over voice)."""
+    secret = _vapi_llm_secret()
+    if not secret:
+        return jsonify({"error": {"message": "Vapi custom-LLM is not configured (set VAPI_LLM_SECRET).",
+                                  "type": "not_configured"}}), 503
+    auth = request.headers.get("Authorization", "") or ""
+    token = auth[7:].strip() if auth.lower().startswith("bearer ") else auth.strip()
+    if not secrets.compare_digest(token or "", secret):
+        return jsonify({"error": {"message": "Unauthorized", "type": "auth"}}), 401
+    try:
+        data = request.get_json(silent=True) or {}
+        in_msgs = data.get("messages") or []
+        want_stream = data.get("stream", True)
+        try:
+            max_tokens = int(data.get("max_tokens") or 0) or 512
+        except (TypeError, ValueError):
+            max_tokens = 512
+        max_tokens = max(64, min(max_tokens, 2048))   # voice replies are short
+        try:
+            temperature = float(data.get("temperature"))
+        except (TypeError, ValueError):
+            temperature = 0.7
+        # conversation = user/assistant turns; drop leading assistant (Claude needs user-first)
+        convo = [{"role": m.get("role"), "content": m.get("content") or ""}
+                 for m in in_msgs if isinstance(m, dict) and m.get("role") in ("user", "assistant")]
+        while convo and convo[0]["role"] == "assistant":
+            convo.pop(0)
+        if not convo:
+            convo = [{"role": "user", "content": "Hello?"}]
+        last_user = next((m["content"] for m in reversed(convo) if m["role"] == "user"), "")
+        system_text = _vapi_llm_system_prompt(last_user)
+        provider, model = get_active_llm_provider()
+        _call = data.get("call")
+        call_id = (_call.get("id") if isinstance(_call, dict) else None) or data.get("call_id") or ""
+
+        def _round():
+            if provider == "claude":
+                return _stream_round_claude(model, system_text, convo, [],
+                                            max_tokens=max_tokens, temperature=temperature)
+            return _stream_round_openai(model, [{"role": "system", "content": system_text}] + convo, [],
+                                        max_tokens=max_tokens, temperature=temperature)
+
+        def _log_usage(u):
+            try:
+                record_chat_cost(session_id=str(call_id or ""), surface="voice_call",
+                                 provider=u.get("provider", provider), model=u.get("model", model),
+                                 prompt_tokens=u.get("prompt_tokens", 0),
+                                 completion_tokens=u.get("completion_tokens", 0),
+                                 total_tokens=u.get("total_tokens"), usage_known=u.get("usage_known", True))
+            except Exception:
+                pass
+
+        if want_stream:
+            def gen():
+                cid = "chatcmpl-" + secrets.token_hex(12)
+                created = int(_time.time())
+                yield _vapi_llm_chunk(cid, created, model, {"role": "assistant"}, None)
+                try:
+                    for ev in _round():
+                        if ev[0] == "token":
+                            yield _vapi_llm_chunk(cid, created, model, {"content": ev[1]}, None)
+                        elif ev[0] == "usage":
+                            _log_usage(ev[1] or {})
+                except Exception as e:
+                    capture_exc(e, "vapi_llm.stream")
+                    print(f"[vapi_llm] stream error: {e}")
+                yield _vapi_llm_chunk(cid, created, model, {}, "stop")
+                yield "data: [DONE]\n\n"
+            return Response(stream_with_context(gen()), mimetype="text/event-stream",
+                            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        # non-streaming
+        text = ""
+        for ev in _round():
+            if ev[0] == "token":
+                text += ev[1]
+            elif ev[0] == "usage":
+                _log_usage(ev[1] or {})
+        return jsonify({
+            "id": "chatcmpl-" + secrets.token_hex(12), "object": "chat.completion",
+            "created": int(_time.time()), "model": model,
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
+                         "finish_reason": "stop"}],
+        })
+    except Exception as e:
+        capture_exc(e, "vapi_llm.completions")
+        print(f"[vapi_llm] failed: {e}")
+        return jsonify({"error": {"message": "internal error", "type": "server"}}), 500
 
 
 # =============================================================================
