@@ -8227,13 +8227,44 @@ def _build_loading_initials_and_name():
 # the /admin/api/section-templates manifest). Adding a variant = a Jinja partial + (optional) assets
 # + one entry here. 'default' is implicit = the client render. FAIL-SAFE everywhere → never a crash.
 
-def _team_section_items():
-    return query_db("SELECT * FROM team_members ORDER BY sort_order ASC") or []
+# Built-in list sections: a generic server-render loader per section. Each maps a slug to its DB table
+# + ORDER BY (mirroring /api/page-bundle), so an Option-B (Jinja) variant DISPLAYS the exact same rows
+# the client would. Table/column names here are TRUSTED CONSTANTS (never user input), so the %-format
+# into SQL carries no injection risk; psycopg still parametrizes all VALUES elsewhere.
+_BUILTIN_SECTION_TABLES = {
+    "team":         ("team_members",    "sort_order ASC"),
+    "testimonials": ("testimonials",    "sort_order ASC"),
+    "faq":          ("faqs",            "sort_order ASC"),
+    "blog":         ("blog_posts",      "sort_order ASC, published_at DESC"),
+    "services":     ("services",        "sort_order ASC, id ASC"),
+    "events":       ("events",          "sort_order ASC, start_at ASC"),
+    "experiences":  ("experiences",     "sort_order ASC"),
+    # NB: 'pricing' is intentionally absent — it's a sub-block rendered INSIDE the experiences section
+    # (its own #pricing-grid, but no standalone page_sections row), so it has no settings.variant
+    # activation path. Templating it would require promoting it to its own section first.
+}
 
 
+def _make_section_loader(table, order_by):
+    """Build a fail-safe view-model loader for a built-in list section → list[dict] (each row may carry
+    an `extra` JSONB of per-item custom fields). `SELECT *` keeps it forward-compatible with new
+    columns. A variant that needs filtering (e.g. published-only blog, future-only events) should
+    register its OWN loader instead of this generic one."""
+    def _loader():
+        return query_db("SELECT * FROM %s ORDER BY %s" % (table, order_by)) or []
+    return _loader
+
+
+# THE single source of truth: section slug -> {loader, variants:{<v>:{label, options, item_fields,
+# client?}}}. Drives EVERYTHING — server render + page injection, per-variant scoped CSS/JS assets
+# (public/sections/<slug>/<variant>.{css,js}), and the admin Layout/options/custom-field UI (via the
+# /admin/api/section-templates manifest). Every list section below is B-READY: it has a loader, a
+# <!-- SECTION_INJECT:<slug> --> placeholder in public/index.html, and a [data-ssr-section] client-skip
+# — so enabling a new look needs ONLY a Jinja partial (+ optional assets) + one variant entry here, no
+# other wiring. 'default' is implicit = the client render. FAIL-SAFE everywhere → never a crash.
 SECTION_TEMPLATE_REGISTRY = {
     "team": {
-        "loader": _team_section_items,   # -> list[dict] (each may carry an `extra` JSONB of custom fields)
+        "loader": _make_section_loader(*_BUILTIN_SECTION_TABLES["team"]),
         "variants": {
             "spotlight": {
                 "label": "Spotlight (server-rendered)",
@@ -8260,12 +8291,107 @@ SECTION_TEMPLATE_REGISTRY = {
     },
     "testimonials": {
         # Option A (client-rendered): data + render happen in the browser (window.SECTION_TEMPLATES);
-        # listed here only so the ONE manifest covers both models for the admin Layout dropdown.
-        "loader": None,
+        # listed here so the ONE manifest covers both models for the admin Layout dropdown. A loader is
+        # still provided so a future server-rendered (Option B) variant works with zero extra wiring.
+        "loader": _make_section_loader(*_BUILTIN_SECTION_TABLES["testimonials"]),
         "variants": {
             "carousel": {"label": "Carousel", "client": True, "options": [], "item_fields": []},
         },
     },
+    "faq": {
+        # Sample of the generalized wiring on a NON-team section: a server-rendered card-grid variant —
+        # proof that ANY list section is B-capable via loader + placeholder + client-skip alone.
+        "loader": _make_section_loader(*_BUILTIN_SECTION_TABLES["faq"]),
+        "variants": {
+            "cards": {
+                "label": "Card grid (server-rendered)",
+                "options": [
+                    {"key": "columns", "label": "Columns", "type": "select",
+                     "choices": ["1", "2", "3"], "default": "2"},
+                    {"key": "reveal", "label": "Animate cards on scroll", "type": "bool", "default": True},
+                ],
+                "item_fields": [],
+            },
+        },
+    },
+    # B-READY (loader + placeholder + client-skip wired); add a partial + a variant entry to enable a
+    # new look. These have no server-rendered variant YET — only the infrastructure is in place.
+    "blog":        {"loader": _make_section_loader(*_BUILTIN_SECTION_TABLES["blog"]),        "variants": {}},
+    "services":    {"loader": _make_section_loader(*_BUILTIN_SECTION_TABLES["services"]),    "variants": {}},
+    "events":      {"loader": _make_section_loader(*_BUILTIN_SECTION_TABLES["events"]),      "variants": {}},
+    "experiences": {"loader": _make_section_loader(*_BUILTIN_SECTION_TABLES["experiences"]), "variants": {}},
+}
+
+
+# CUSTOM sections — the unified bridge. Admin-created sections (section_type != 'built_in') render
+# CLIENT-side, dispatching on page_sections.template to a renderer (cards_grid, text_content, …) with
+# per-item rows from custom_section_items. This registry is the SINGLE source describing those template
+# types for the admin item-editor: the standard columns each uses, PLUS optional `extra` fields stored
+# in custom_section_items.extra_data (a renderer reads item.extra_data.<key>). Served to the admin via
+# the /admin/api/section-templates manifest under "__custom__" so the item form is registry-driven
+# (with the JS hardcoded list as a fail-safe fallback). A field defaults to a top-level column; mark it
+# {"extra": True} to route it into the extra_data JSONB — no migration, the column already exists.
+_CUSTOM_SECTION_TEMPLATES = {
+    "cards_grid": {
+        "label": "Cards Grid", "group": "Layouts (you provide items)",
+        "item_fields": [
+            {"id": "title", "label": "Title", "type": "text"},
+            {"id": "subtitle", "label": "Subtitle", "type": "text"},
+            {"id": "content", "label": "Description", "type": "textarea"},
+            {"id": "image_url", "label": "Image URL", "type": "url"},
+            {"id": "link_url", "label": "Link URL", "type": "url"},
+            {"id": "link_text", "label": "Link Text", "type": "text"},
+            # Sample EXTRA field (stored in extra_data) — renderCardsGridTemplate shows it as a ribbon.
+            {"id": "badge", "label": "Badge / ribbon (optional)", "type": "text", "extra": True},
+        ],
+    },
+    "text_content": {
+        "label": "Text Content", "group": "Layouts (you provide items)",
+        "item_fields": [
+            {"id": "title", "label": "Heading", "type": "text"},
+            {"id": "subtitle", "label": "Subtitle", "type": "text"},
+            {"id": "content", "label": "Body Text", "type": "textarea"},
+        ],
+    },
+    "image_gallery": {
+        "label": "Image Gallery", "group": "Layouts (you provide items)",
+        "item_fields": [
+            {"id": "title", "label": "Caption", "type": "text"},
+            {"id": "image_url", "label": "Image URL", "type": "url"},
+            {"id": "subtitle", "label": "Alt Text", "type": "text"},
+        ],
+    },
+    "cta_banner": {
+        "label": "CTA Banner", "group": "Layouts (you provide items)",
+        "item_fields": [
+            {"id": "title", "label": "Heading", "type": "text"},
+            {"id": "content", "label": "Description", "type": "textarea"},
+            {"id": "link_url", "label": "Button URL", "type": "url"},
+            {"id": "link_text", "label": "Button Text", "type": "text"},
+        ],
+    },
+    "stats_counter": {
+        "label": "Stats / Counters", "group": "Layouts (you provide items)",
+        "item_fields": [
+            {"id": "title", "label": "Number / Value", "type": "text"},
+            {"id": "subtitle", "label": "Label", "type": "text"},
+        ],
+    },
+    "icon_features": {
+        "label": "Icon Features", "group": "Layouts (you provide items)",
+        "item_fields": [
+            {"id": "icon", "label": "Icon Name", "type": "text"},
+            {"id": "title", "label": "Title", "type": "text"},
+            {"id": "content", "label": "Description", "type": "textarea"},
+        ],
+    },
+    # Data-showcase templates pull from existing libraries (no per-section items to edit).
+    "events":        {"label": "Upcoming Events", "group": "Data showcases (auto-pulled from your library)", "data_driven": True, "item_fields": []},
+    "rsvp_form":     {"label": "RSVP / Ticket Form (single event)", "group": "Data showcases (auto-pulled from your library)", "data_driven": True, "item_fields": []},
+    "video_gallery": {"label": "Video Gallery", "group": "Data showcases (auto-pulled from your library)", "data_driven": True, "item_fields": []},
+    "podcast":       {"label": "Podcast Episodes", "group": "Data showcases (auto-pulled from your library)", "data_driven": True, "item_fields": []},
+    "products":      {"label": "Products / Shop", "group": "Data showcases (auto-pulled from your library)", "data_driven": True, "item_fields": []},
+    "services":      {"label": "Services / Bookings", "group": "Data showcases (auto-pulled from your library)", "data_driven": True, "item_fields": []},
 }
 
 
@@ -8342,8 +8468,11 @@ def _render_section_partial(slug):
 @app.route("/admin/api/section-templates", methods=["GET"])
 @admin_required
 def admin_section_templates():
-    """Manifest of server-rendered section variants — the SINGLE source for the admin UI: per section,
-    each variant's key + label + options schema + per-item custom-field schema."""
+    """Manifest of section templates — the SINGLE source for the admin UI. Top-level keys are built-in
+    section slugs → list of server-rendered variants (key + label + options + per-item custom-field
+    schema). The reserved "__custom__" key (slugs can't contain underscores, so it can never collide
+    with a real section slug) maps each CUSTOM-section template type → its admin item-editor schema
+    (label, group, data_driven, item_fields). One endpoint now drives BOTH built-in and custom UIs."""
     out = {}
     for slug, reg in SECTION_TEMPLATE_REGISTRY.items():
         out[slug] = [
@@ -8351,6 +8480,11 @@ def admin_section_templates():
              "options": vm.get("options") or [], "item_fields": vm.get("item_fields") or []}
             for vk, vm in (reg.get("variants") or {}).items()
         ]
+    out["__custom__"] = {
+        tk: {"label": tm.get("label") or tk, "group": tm.get("group") or "",
+             "data_driven": bool(tm.get("data_driven")), "item_fields": tm.get("item_fields") or []}
+        for tk, tm in _CUSTOM_SECTION_TEMPLATES.items()
+    }
     return jsonify(out)
 
 

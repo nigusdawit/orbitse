@@ -5341,6 +5341,55 @@
       return _sectionTemplates || {};
     }
 
+    // ── CUSTOM-section templates (the unified bridge) ────────────────────────────────────────────
+    // Custom sections render client-side, but their template list + per-item field schema now come
+    // from the SAME manifest (its "__custom__" block) instead of being hardcoded — one source of
+    // truth shared with built-in sections. Both the item-editor (getTemplateFields) and the create
+    // dropdown (_populateCustomTemplateSelect) read this; if the manifest is unavailable we fall back
+    // to the static HTML <option>s + the hardcoded getTemplateFields switch, so nothing ever breaks.
+    let _customTemplateFields = null;   // template-key -> item_fields[] ({id,label,type,extra?})
+    let _customTemplateMeta = null;     // template-key -> {label, group, data_driven}
+    let _currentItemExtra = {};         // extra_data of the item currently open in the editor (preserved on save)
+
+    async function _ensureCustomTemplates() {
+      if (_customTemplateFields) return;
+      try {
+        const m = await getSectionTemplates();
+        const c = (m && m.__custom__) || {};
+        const fields = {}, meta = {};
+        Object.keys(c).forEach(k => {
+          fields[k] = Array.isArray(c[k].item_fields) ? c[k].item_fields : [];
+          meta[k] = { label: c[k].label || k, group: c[k].group || 'Templates', data_driven: !!c[k].data_driven };
+        });
+        _customTemplateFields = fields;
+        _customTemplateMeta = meta;
+      } catch (e) { _customTemplateFields = {}; _customTemplateMeta = {}; }
+    }
+
+    // Rebuild the "Add Section" template <select> from the manifest (grouped by `group`, registry
+    // order preserved). Fail-safe: if the manifest has no custom block, the static <option>s stay.
+    async function _populateCustomTemplateSelect() {
+      try {
+        await _ensureCustomTemplates();
+        const keys = Object.keys(_customTemplateMeta || {});
+        if (!keys.length) return;                       // keep the static options already in the HTML
+        const sel = document.getElementById('new-section-template');
+        if (!sel) return;
+        const groups = {}, order = [];
+        keys.forEach(k => {
+          const g = _customTemplateMeta[k].group || 'Templates';
+          if (!groups[g]) { groups[g] = []; order.push(g); }
+          groups[g].push({ key: k, label: _customTemplateMeta[k].label });
+        });
+        sel.innerHTML = order.map(g =>
+          `<optgroup label="${esc(g)}">` +
+          groups[g].map(o => `<option value="${esc(o.key)}">${esc(o.label)}</option>`).join('') +
+          `</optgroup>`
+        ).join('');
+        sel.value = 'cards_grid';
+      } catch (e) { /* keep static options */ }
+    }
+
     async function loadPageSections() {
       try {
         const res = await fetch('/admin/api/page-sections');
@@ -5518,6 +5567,7 @@
       document.getElementById('new-section-title').value = '';
       document.getElementById('new-section-slug').value = '';
       document.getElementById('new-section-template').value = 'cards_grid';
+      _populateCustomTemplateSelect();   // registry-driven options (fail-safe: keeps static if manifest absent)
     }
 
     function hideAddSectionForm() {
@@ -6018,9 +6068,10 @@
       }
     }
 
-    function manageSectionItems(sectionId, template, title) {
+    async function manageSectionItems(sectionId, template, title) {
       currentSectionId = sectionId;
       currentSectionTemplate = template;
+      await _ensureCustomTemplates();   // load the registry-driven item-field schema before the editor opens
       document.getElementById('section-items-title').textContent = 'Items: ' + title;
       document.getElementById('section-items-panel').style.display = 'block';
       hideSectionItemForm();
@@ -6094,6 +6145,11 @@
     }
 
     function getTemplateFields(template) {
+      // Prefer the manifest (single source of truth) — populated by manageSectionItems before the
+      // editor opens. Fall back to the hardcoded switch below if the manifest was unavailable.
+      if (_customTemplateFields && Array.isArray(_customTemplateFields[template])) {
+        return _customTemplateFields[template];
+      }
       switch (template) {
         case 'cards_grid':
           return [
@@ -6158,9 +6214,12 @@
       const fields = getTemplateFields(template);
       const container = document.getElementById('section-item-fields');
       data = data || {};
+      // Stash the item's extra_data so save can preserve any keys not exposed as fields. Fields marked
+      // {extra:true} read/write extra_data.<id>; standard fields map to top-level columns.
+      _currentItemExtra = (data.extra_data && typeof data.extra_data === 'object') ? data.extra_data : {};
 
       container.innerHTML = fields.map(f => {
-        const val = esc(data[f.id] || '');
+        const val = esc((f.extra ? _currentItemExtra[f.id] : data[f.id]) || '');
         if (f.type === 'textarea') {
           return `
             <div class="form-row">
@@ -6215,9 +6274,14 @@
       const id = document.getElementById('section-item-form-id').value;
       const fields = getTemplateFields(currentSectionTemplate);
       const data = {};
+      // Start extra_data from the editing item's existing blob so keys not exposed as fields survive.
+      const extra = Object.assign({}, _currentItemExtra || {});
       fields.forEach(f => {
-        data[f.id] = document.getElementById('si-' + f.id).value;
+        const el = document.getElementById('si-' + f.id);
+        if (!el) return;
+        if (f.extra) { extra[f.id] = el.value; } else { data[f.id] = el.value; }
       });
+      if (Object.keys(extra).length) data.extra_data = extra;   // persisted as JSONB by the items API
 
       try {
         const url = id
