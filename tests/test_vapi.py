@@ -174,3 +174,29 @@ def test_vapi_assign_number():
     finally:
         vapi_mod._vapi_patch = orig
         os.environ.pop("VAPI_PRIVATE_KEY", None)
+
+
+# --- slice 4: function-call tools routed to the concierge tool executor -------
+
+def test_vapi_webhook_function_call_routes_to_tool():
+    os.environ.pop("VAPI_WEBHOOK_SECRET", None)   # dev: no secret → fail-open
+    orig = getattr(app, "execute_chat_tool", None)
+    app.execute_chat_tool = lambda name, args_json, session_id="": ("RAN:" + (name or ""), {})
+    try:
+        # newer toolCalls shape → {"results": [{toolCallId, result}]}
+        r = app.app.test_client().post("/webhooks/vapi", json={"message": {
+            "type": "tool-calls", "call": {"id": "vc_tool_1"},
+            "toolCalls": [{"id": "tc_1", "function": {"name": "book_meeting", "arguments": "{}"}}]}})
+        assert r.status_code == 200
+        d = r.get_json()
+        assert d["results"][0]["toolCallId"] == "tc_1"
+        assert d["results"][0]["result"] == "RAN:book_meeting"
+        # legacy functionCall shape → {"result": ...}
+        r2 = app.app.test_client().post("/webhooks/vapi", json={"message": {
+            "type": "function-call", "call": {"id": "vc_tool_2"},
+            "functionCall": {"name": "capture_lead", "parameters": {"email": "x@y.z"}}}})
+        assert r2.status_code == 200
+        assert r2.get_json()["result"] == "RAN:capture_lead"
+    finally:
+        if orig is not None:
+            app.execute_chat_tool = orig

@@ -15,6 +15,7 @@ Registered in app.py via app.register_blueprint(vapi_bp). The /webhooks prefix i
 CSRF-exempt + un-gated, so the webhook is reachable by Vapi's servers.
 """
 import hmac
+import json
 import os
 
 import httpx
@@ -274,6 +275,45 @@ def _log_cost(tid, vid, assistant_id, duration, cost):
         print(f"[vapi] cost log failed: {e}")
 
 
+def _vapi_handle_tool_call(msg, call_id):
+    """Run a Vapi tool/function call against the concierge's tools and return Vapi's expected
+    result shape. Routes to the SAME executor the website chat uses (execute_chat_tool), so
+    managed assistants reuse book_meeting / capture_lead / lookups with no rewrite. Handles both
+    the newer toolCalls and the legacy functionCall shapes. Lazy app import (app imports this
+    blueprint, so import at call time to avoid a cycle)."""
+    try:
+        from app import execute_chat_tool
+    except Exception as e:
+        print(f"[vapi] tool executor import failed: {e}")
+        return jsonify({"results": []})
+    sess = str(call_id or "vapi")
+
+    def _run(name, args):
+        args_json = args if isinstance(args, str) else json.dumps(args or {})
+        try:
+            out, _log = execute_chat_tool(name or "", args_json, session_id=sess)
+            return out if isinstance(out, str) else json.dumps(out)
+        except Exception as e:
+            print(f"[vapi] tool '{name}' failed: {e}")
+            return json.dumps({"error": "tool_failed"})
+
+    tcs = msg.get("toolCalls") or msg.get("toolCallList") or []
+    if isinstance(tcs, list) and tcs:
+        results = []
+        for tc in tcs:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function") or {}
+            results.append({"toolCallId": tc.get("id") or "",
+                            "result": _run(fn.get("name"), fn.get("arguments"))})
+        return jsonify({"results": results})
+
+    fc = msg.get("functionCall") or {}
+    if isinstance(fc, dict) and fc.get("name"):
+        return jsonify({"result": _run(fc.get("name"), fc.get("parameters"))})
+    return jsonify({"results": []})
+
+
 @vapi_bp.route("/webhooks/vapi", methods=["POST"])
 def vapi_webhook():
     """Vapi posts call lifecycle + end-of-call reports here. Verifies the shared secret header
@@ -301,6 +341,10 @@ def vapi_webhook():
                      "web" if "web" in ctype else "")
         tid = current_tenant_id()
 
+        # Tool/function calls need a synchronous result back to Vapi.
+        if mtype in ("function-call", "tool-calls"):
+            return _vapi_handle_tool_call(msg, vid)
+
         if mtype == "end-of-call-report":
             art = msg.get("artifact") or {}
             ended = msg.get("endedReason") or ""
@@ -322,7 +366,7 @@ def vapi_webhook():
         elif mtype in ("status-update", "call.started", "call.ended"):
             status = msg.get("status") or call.get("status") or "in-progress"
             _upsert_call(tid, vid, assistant_id, cust, phone, direction, status=status)
-        # function-call / tool-calls handled in slice 3.
+        # (function-call / tool-calls handled above.)
         return jsonify({"received": True})
     except Exception as e:
         capture_exc(e, "vapi.webhook")
